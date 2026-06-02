@@ -55,6 +55,18 @@ class Args:
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    # ---- RTC (Real-Time Chunking) guidance parameters (agilex feature) ----
+    use_rtc_guidance: bool = False
+    """Enable RTC guidance for temporally consistent action chunking."""
+    rtc_inference_delay: int = 4
+    """RTC inference delay steps."""
+    rtc_execute_horizon: int = 1
+    """RTC execution horizon steps."""
+    rtc_prefix_attention_schedule: str = "exp"
+    """RTC prefix attention schedule type."""
+    rtc_max_guidance_weight: float = 1.0
+    """Maximum RTC guidance weight."""
+
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {

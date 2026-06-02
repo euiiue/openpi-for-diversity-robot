@@ -53,6 +53,32 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             raise RuntimeError(f"Error in inference server:\n{response}")
         return msgpack_numpy.unpackb(response)
 
+    def infer_with_rtc_guidance(
+        self,
+        obs: Dict,
+        prev_action_chunk,
+        executed_steps: int = 0,
+        inference_delay: int = 4,
+        execute_horizon: int = 1,
+    ) -> Dict:
+        """Infer actions with RTC (Real-Time Chunking) guidance.
+
+        Ported from agilex openpi-agilex. Wraps the RTC parameters into the
+        observation dict so the server-side policy can apply temporal guidance.
+
+        Falls back to normal infer() if the server/policy doesn't support RTC.
+        """
+        import numpy as np
+
+        obs = dict(obs)  # Don't mutate the caller's dict.
+        obs["rtc_guidance"] = {
+            "prev_action_chunk": np.asarray(prev_action_chunk),
+            "executed_steps": executed_steps,
+            "inference_delay": inference_delay,
+            "execute_horizon": execute_horizon,
+        }
+        return self.infer(obs)
+
     @override
     def reset(self) -> None:
         pass

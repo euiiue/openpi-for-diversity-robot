@@ -295,18 +295,36 @@ def convert_bag_to_episode(
     next_state_action_frames = 0
 
     while current_time < end_time - dt:
-        joint_msg = nearest_item(joint_states, current_time)
-        next_joint_msg = nearest_item(joint_states, current_time + dt)
+        # --- Step 1: collect nearest items for each sensor independently ---
+        head_item = nearest_timed_item(image_buffers["head"], current_time)
+        left_item = nearest_timed_item(image_buffers["left_wrist"], current_time)
+        right_item = nearest_timed_item(image_buffers["right_wrist"], current_time)
+        joint_item = nearest_timed_item(joint_states, current_time)
+        next_joint_item = nearest_timed_item(joint_states, current_time + dt)
 
-        if joint_msg is None or next_joint_msg is None:
+        if any(x is None for x in (head_item, left_item, right_item, joint_item, next_joint_item)):
             current_time += dt
             continue
 
-        head = nearest_item(image_buffers["head"], current_time)
-        left_wrist = nearest_item(image_buffers["left_wrist"], current_time)
-        right_wrist = nearest_item(image_buffers["right_wrist"], current_time)
+        # --- Step 2: compute common reference timestamp ---
+        # Use the latest actual sensor timestamp as the shared reference,
+        # then re-match all sensors to this reference for temporal consistency.
+        # This mirrors the get_frame() logic in interface.py.
+        ref_time = max(
+            head_item[0],
+            left_item[0],
+            right_item[0],
+            joint_item[0],
+        )
 
-        if head is None or left_wrist is None or right_wrist is None:
+        # --- Step 3: re-match all sensors to the common reference time ---
+        head = nearest_item(image_buffers["head"], ref_time)
+        left_wrist = nearest_item(image_buffers["left_wrist"], ref_time)
+        right_wrist = nearest_item(image_buffers["right_wrist"], ref_time)
+        joint_msg = nearest_item(joint_states, ref_time)
+        next_joint_msg = nearest_item(joint_states, ref_time + dt)
+
+        if any(x is None for x in (head, left_wrist, right_wrist, joint_msg, next_joint_msg)):
             current_time += dt
             continue
 
@@ -314,8 +332,9 @@ def convert_bag_to_episode(
         action_14d = None
 
         if action_source in ("command", "command_or_next_state"):
-            left_cmd = nearest_item(command_buffers["left"], current_time, max_delta=max_command_age_sec)
-            right_cmd = nearest_item(command_buffers["right"], current_time, max_delta=max_command_age_sec)
+            # Action commands also aligned to ref_time for consistency.
+            left_cmd = nearest_item(command_buffers["left"], ref_time, max_delta=max_command_age_sec)
+            right_cmd = nearest_item(command_buffers["right"], ref_time, max_delta=max_command_age_sec)
             action_14d = extract_action_14d_from_commands(left_cmd, right_cmd, state_14d)
             if action_14d is not None:
                 command_action_frames += 1
