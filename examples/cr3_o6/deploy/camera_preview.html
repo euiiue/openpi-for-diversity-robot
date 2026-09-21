@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>CR3 · 三路模型输入</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 28px; background: #10151c; color: #e5edf5; }
+  h1 { margin: 0 0 12px; font-size: 25px; }
+  p { line-height: 1.6; }
+  .hint, figcaption { color: #a9b8c8; }
+  #status { padding: 14px 18px; background: #223144; border-radius: 8px; }
+  #status[data-state="ok"] { background: #173e34; }
+  #status[data-state="warning"] { background: #523618; }
+  #status[data-state="error"] { background: #54272c; }
+  #mode { padding: 12px 18px; border: 1px solid #40536a; border-radius: 8px; }
+  #mode[data-mode="preview"] { border-color: #4b9878; }
+  #mode[data-mode="control"] { border-color: #b28a42; }
+  .views { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  figure { margin: 0; padding: 16px; background: #1a2330; border-radius: 10px; }
+  h2 { margin: 0 0 6px; font-size: 18px; }
+  code { display: block; font-size: 12px; overflow-wrap: anywhere; color: #9eb4ce; }
+  img { display: block; width: 224px; height: 224px; max-width: 100%; object-fit: contain; background: #080c11; margin: 16px 0 8px; }
+  figcaption { min-height: 54px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+  #prompt { white-space: pre-wrap; }
+  @media (max-width: 900px) { .views { grid-template-columns: 1fr; } }
+</style>
+<h1>CR3 · 三路模型输入</h1>
+<p class="hint">显示客户端每次调用推理接口时使用的三台独立相机 RGB 图像（无损预览）。</p>
+<p id="mode" role="status">正在读取运行模式…</p>
+<p id="status" role="status">正在连接预览服务…</p>
+<p id="prompt"></p>
+<div class="views">
+  <figure>
+    <h2>全局视图 · Base</h2>
+    <code>observation/global_rgb → base_0_rgb</code>
+    <img id="global_rgb" alt="全局相机的 224×224 模型输入预览">
+    <figcaption id="global_rgb-meta"></figcaption>
+  </figure>
+  <figure>
+    <h2>腕部视图 · Wrist</h2>
+    <code>observation/wrist_rgb → left_wrist_0_rgb</code>
+    <img id="wrist_rgb" alt="腕部相机的 224×224 模型输入预览">
+    <figcaption id="wrist_rgb-meta"></figcaption>
+  </figure>
+  <figure>
+    <h2>第三相机 · Camera 3</h2>
+    <code>observation/right_wrist_rgb → right_wrist_0_rgb</code>
+    <img id="right_wrist_rgb" alt="第三相机的 224×224 模型输入预览">
+    <figcaption id="right_wrist_rgb-meta"></figcaption>
+  </figure>
+</div>
+<p class="hint">画面随推理请求更新，包含启动预热；不是相机 30 FPS 直播。
+  帧时间戳递增可确认请求使用了新帧。长时间不更新也可能是推理等待或部署已停止，请结合终端日志判断。
+  本页显示 224×224 模型输入画幅；原图按比例缩放并居中补黑边，原始尺寸显示在图注中。</p>
+<script>
+  const mode = document.getElementById('mode');
+  const status = document.getElementById('status');
+  let sequence = 0;
+  async function refresh() {
+    try {
+      const response = await fetch('/snapshot', {cache: 'no-store', signal: AbortSignal.timeout(3000)});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      mode.dataset.mode = data.preview_only ? 'preview' : 'control';
+      mode.textContent = data.preview_only
+        ? '当前模式：只读推理预览。会读取相机并请求模型，模型动作会被丢弃，不会发送机械臂运动命令。'
+        : '当前模式：RTC 控制。网页只查看推理输入；模型动作会用于机器人控制。';
+      if (data.sequence === 0) {
+        status.dataset.state = '';
+        status.textContent = '预览已启动，等待第一次推理输入（相机连接与采集完成后显示）。';
+      } else {
+        if (sequence !== data.sequence) {
+          for (const view of data.images) {
+            document.getElementById(view.name).src = view.src;
+            const sourceShape = view.source_shape || view.shape;
+            document.getElementById(`${view.name}-meta`).textContent =
+              `模型输入 224×224 RGB · 原图 ${sourceShape[1]}×${sourceShape[0]}` +
+              ` · 请求时帧龄 ${view.capture_age_ms.toFixed(1)} ms` +
+              ` · 帧时间戳 ${view.timestamp_ns}`;
+          }
+          document.getElementById('prompt').textContent = `任务：${data.prompt}`;
+          sequence = data.sequence;
+        }
+        const replied = data.completed === data.sequence;
+        const delayed = data.since_request_ms > 2000;
+        status.dataset.state = delayed ? 'warning' : (replied ? 'ok' : '');
+        status.textContent = `输入 #${data.sequence}（含预热） · ` +
+          (replied ? '本次服务端已返回动作' : `等待本次推理返回 · 已完成 #${data.completed}`) +
+          ` · 距本次请求 ${(data.since_request_ms / 1000).toFixed(1)} s` +
+          (delayed ? ' · 输入暂未更新，请查看部署终端' : '');
+      }
+    } catch (error) {
+      status.dataset.state = 'error';
+      status.textContent = `预览连接中断或请求失败，当前画面为旧帧：${error.message}`;
+    } finally {
+      setTimeout(refresh, 200);
+    }
+  }
+  refresh();
+</script>
+</html>

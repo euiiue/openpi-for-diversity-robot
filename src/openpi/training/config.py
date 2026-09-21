@@ -870,67 +870,6 @@ _CONFIGS = [
             "control_hz": 20,
         },
     ),
-    TrainConfig(
-        name="pi05_dobot_cr5_o6_roi_lora",
-        model=pi0_config.Pi0Config(
-            dtype="bfloat16",
-            pi05=True,
-            action_dim=32,
-            action_horizon=20,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ),
-        data=LeRobotDobotCR5O6DataConfig(
-            # Cleaned 50-episode CR5/O6 training set converted from LeRobot v3 to v2.1.
-            repo_id="local/dobot_cr5_o6_motor_clean_50",
-            base_config=DataConfig(prompt_from_task=False),
-            default_prompt="Place the current motor vertically with the head facing upward",
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params"
-        ),
-        freeze_filter=pi0_config.Pi0Config(
-            dtype="bfloat16",
-            pi05=True,
-            action_dim=32,
-            action_horizon=20,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        # Make the inherited defaults explicit for this 30k-step LoRA run:
-        # 2k warmup steps, then cosine decay through the final train step.
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=2_000,
-            peak_lr=2.5e-5,
-            decay_steps=30_000,
-            decay_lr=2.5e-6,
-        ),
-        pytorch_training_precision="bfloat16",
-        ema_decay=None,
-        batch_size=96,
-        num_train_steps=30_000,
-        save_interval=10_000,
-        policy_metadata={
-            "robot": "dobot_cr5_o6",
-            "action_contract": dobot_policy.ACTION_CONTRACT,
-            "rtc": {
-                "control_hz": 20.0,
-                "action_horizon": 20,
-                "physical_action_dim": 12,
-                "model_action_dim": 32,
-                # Replace this initial value with ceil(P95_RTT_seconds * 20)
-                # after running the read-only latency benchmark.
-                "initial_inference_delay_steps": 4,
-                "prefix_attention_horizon": 10,
-                "num_denoise_steps": 10,
-                "max_guidance_weight": 10.0,
-                "inference_timeout_s": 5.0,
-                "max_consecutive_inference_errors": 3,
-                "request_poll_s": 0.005,
-                "latency_history_size": 100,
-            },
-        },
-    ),
     #
     # Fine-tuning Aloha configs.
     #
@@ -1139,56 +1078,6 @@ _CONFIGS = [
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
 ]
-
-_CR3_DAGGER_BASE = next(config for config in _CONFIGS if config.name == "pi05_cr3_o6_joint_abs_lora")
-_CONFIGS.append(dataclasses.replace(
-    _CR3_DAGGER_BASE,
-    name="pi05_cr3_o6_dagger_round1_lora",
-    data=dataclasses.replace(_CR3_DAGGER_BASE.data, repo_id="local/cr3_o6_dagger_round1"),
-    # Select the field-tested pi0 checkpoint explicitly. Load model parameters
-    # only; a new run initializes a fresh optimizer and scheduler.
-    weight_loader=weight_loaders.CheckpointWeightLoader(params_path=tyro.MISSING),
-    resume=False,
-))
-
-# Exact task text stored in local/cr3_o6_final_fantasy_20260915 (meta/tasks.jsonl
-# and all 62 episodes). The dataset task string was rewritten on 2026-09-15 21:02,
-# i.e. before this run started, so this is the language condition the checkpoint
-# actually learned. Declaring it here publishes it as server metadata
-# ("task_prompt"), which makes the deployment client reject any other --prompt
-# instead of silently running out of distribution.
-_CR3_FINAL_FANTASY_TASK = (
-    "Identify whether the motor's protruding end faces left or right, "
-    "then grasp, reorient, and place the motor with the protruding end facing upward."
-)
-
-_CONFIGS.append(dataclasses.replace(
-    _CR3_DAGGER_BASE,
-    name="pi05_cr3_o6_final_fantasy_20260915_lora",
-    model=dataclasses.replace(_CR3_DAGGER_BASE.model, dtype="bfloat16"),
-    data=dataclasses.replace(
-        _CR3_DAGGER_BASE.data,
-        repo_id="local/cr3_o6_final_fantasy_20260915",
-        default_prompt=_CR3_FINAL_FANTASY_TASK,
-    ),
-    batch_size=32,
-    resume=False,
-))
-
-_CR3_DATA_V21_TASK = "Pick up the motor and place it on the right side with the protruding side facing left."
-
-_CONFIGS.append(dataclasses.replace(
-    _CR3_DAGGER_BASE,
-    name="pi05_cr3_o6_data_v21_lora",
-    model=dataclasses.replace(_CR3_DAGGER_BASE.model, dtype="bfloat16"),
-    data=dataclasses.replace(
-        _CR3_DAGGER_BASE.data,
-        repo_id="data_v21",
-        default_prompt=_CR3_DATA_V21_TASK,
-    ),
-    batch_size=32,
-    resume=False,
-))
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

@@ -41,3 +41,17 @@ def test_train_config_reads_output_locations_when_created(monkeypatch, tmp_path)
     assert train_config.assets_dirs == assets / "portable"
     resumed = dataclasses.replace(train_config, exp_name="run")
     assert resumed.checkpoint_dir == checkpoints / "portable" / "run"
+
+
+def test_only_baseline_cr3_o6_config_is_registered():
+    from openpi.training import config
+
+    names = {item.name for item in config._CONFIGS}
+    assert "pi05_cr3_o6_joint_abs_lora" in names
+    removed = {
+        f"pi05_cr3_o6_{'dagger'}_round1_lora",
+        f"pi05_cr3_o6_{'final_fantasy'}_20260915_lora",
+        f"pi05_cr3_o6_{'data_v21'}_lora",
+        "pi05_dobot_cr5_o6_roi_lora",
+    }
+    assert names.isdisjoint(removed)

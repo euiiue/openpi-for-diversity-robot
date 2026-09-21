@@ -1,0 +1,6 @@
+# Install with the robot's Python 3.12, alongside packages/openpi-client.
+numpy<2
+PyYAML
+pymodbus==3.5.1
+pyserial
+pyrealsense2
