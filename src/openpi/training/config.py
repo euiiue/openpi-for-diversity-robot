@@ -5,6 +5,7 @@ from collections.abc import Sequence
 import dataclasses
 import difflib
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -18,11 +19,12 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.Dobot_policy as dobot_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
-import openpi.policies.wuji_policy as wuji_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
+import openpi.shared.nnx_utils as nnx_utils
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -375,69 +377,48 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
-class LeRobotWujiDataConfig(DataConfigFactory):
-    """
-    Config for Wuji robot (dual-arm dual-dexterous-hand) dataset.
+class LeRobotDobotCR5O6DataConfig(DataConfigFactory):
+    """Phase 10 data contract for converted CR5 + O6 episodes.
 
-    Dataset features:
-    - observation.state: 54 dims (7 left arm + 20 left hand + 7 right arm + 20 right hand)
-    - action: 54 dims (full dimension)
-    - observation.images.cam_left_wrist: (480, 640, 3)
-    - observation.images.cam_right_wrist: (480, 640, 3)
-    - observation.images.stereo_right: (480, 640, 3)
-
-    This config uses the full 54 dimensions, requiring a model with action_dim=54.
-    Action projection layers (action_in_proj, action_out_proj) will need to be
-    initialized from scratch when loading pretrained weights.
+    Phase 8 conversion is intentionally not implemented here.  Once a dataset
+    exists, its six source fields are repacked to exactly the same keys used by
+    robot-side inference. TCP values already have their declared physical
+    representation, so this config does not add ``DeltaActions``.
     """
 
-    extra_delta_transform: bool = False
-    # Action key name in the raw dataset (used by LeRobot loader BEFORE repack transform)
-    action_sequence_keys: Sequence[str] = ("action",)
+    default_prompt: str | None = None
+    joint_space: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Map dataset keys to the keys expected by transforms
         repack_transform = _transforms.Group(
             inputs=[
+                _transforms.InjectDefaultPrompt(self.default_prompt),
                 _transforms.RepackTransform(
                     {
-                        "observation/image": "observation.images.stereo_right",
-                        "observation/left_wrist_image": "observation.images.cam_left_wrist",
-                        "observation/right_wrist_image": "observation.images.cam_right_wrist",
-                        "observation/state": "observation.state",
-                        "actions": "action",
+                        "observation/global_rgb": "observation.images.base_0_rgb" if self.joint_space else "global_rgb",
+                        "observation/wrist_rgb": "observation.images.left_wrist_0_rgb" if self.joint_space else "wrist_rgb",
+                        "observation/right_wrist_rgb": (
+                            "observation.images.right_wrist_0_rgb" if self.joint_space else "right_wrist_rgb"
+                        ),
+                        "observation/state": "observation.state" if self.joint_space else "state",
+                        "actions": "action" if self.joint_space else "actions",
                         "prompt": "prompt",
                     }
                 )
             ]
         )
-
         data_transforms = _transforms.Group(
-            inputs=[wuji_policy.WujiInputs(model_type=model_config.model_type)],
-            outputs=[wuji_policy.WujiOutputs()],
+            inputs=[dobot_policy.CR3O6JointInputs() if self.joint_space else dobot_policy.DobotCR5O6Inputs(model_type=model_config.model_type)],
+            outputs=[dobot_policy.DobotCR5O6Outputs()],
         )
-
-        # Apply delta action transform if needed (for absolute action data)
-        # For Wuji: apply delta to arm joints, keep hand joints as-is
-        if self.extra_delta_transform:
-            # Full 54D: Left arm (7) + Left hand (20) + Right arm (7) + Right hand (20)
-            # Apply delta to arms, keep hands absolute
-            delta_action_mask = _transforms.make_bool_mask(7, -20, 7, -20)
-
-            data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-            )
-
         model_transforms = ModelTransformFactory()(model_config)
-
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            action_sequence_keys=self.action_sequence_keys,
+            action_sequence_keys=("action" if self.joint_space else "actions",),
         )
 
 
@@ -582,9 +563,11 @@ class TrainConfig:
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
     # Base directory for config assets (e.g., norm stats).
-    assets_base_dir: str = "./assets"
+    assets_base_dir: str = dataclasses.field(default_factory=lambda: os.environ.get("OPENPI_ASSETS_DIR", "assets"))
     # Base directory for checkpoints.
-    checkpoint_base_dir: str = "./checkpoints"
+    checkpoint_base_dir: str = dataclasses.field(
+        default_factory=lambda: os.environ.get("OPENPI_CHECKPOINT_DIR", "checkpoints")
+    )
 
     # Random seed that will be used by random generators during training.
     seed: int = 42
@@ -595,6 +578,8 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+    # Optional wall-clock budget including initialization; save before stopping.
+    max_train_seconds: float | None = None
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -843,11 +828,108 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_cr3_o6_joint_abs_lora",
+        model=pi0_config.Pi0Config(
+            dtype="float32", pi05=True, action_dim=32, action_horizon=20,
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotDobotCR5O6DataConfig(
+            repo_id="local/cr3_o6_ceshi_reviewed_20260912",
+            joint_space=True,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
-        pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        freeze_filter=nnx.Any(
+            pi0_config.Pi0Config(
+                pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+            ).get_freeze_filter(),
+            nnx_utils.PathRegex("PaliGemma/img/.*"),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500, peak_lr=2.5e-5, decay_steps=45_000, decay_lr=2.5e-6,
+        ),
+        ema_decay=None,
+        batch_size=2,
+        num_workers=2,
+        num_train_steps=45_000,
+        save_interval=5000,
+        log_interval=100,
+        wandb_enabled=False,
+        policy_metadata={
+            "robot": "nrc_cr3a_o6",
+            "action_contract": dobot_policy.JOINT_ACTION_CONTRACT,
+            "state_dim": 12,
+            "physical_action_dim": 12,
+            "control_hz": 20,
+        },
+    ),
+    TrainConfig(
+        name="pi05_dobot_cr5_o6_roi_lora",
+        model=pi0_config.Pi0Config(
+            dtype="bfloat16",
+            pi05=True,
+            action_dim=32,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotDobotCR5O6DataConfig(
+            # Cleaned 50-episode CR5/O6 training set converted from LeRobot v3 to v2.1.
+            repo_id="local/dobot_cr5_o6_motor_clean_50",
+            base_config=DataConfig(prompt_from_task=False),
+            default_prompt="Place the current motor vertically with the head facing upward",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            dtype="bfloat16",
+            pi05=True,
+            action_dim=32,
+            action_horizon=20,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        # Make the inherited defaults explicit for this 30k-step LoRA run:
+        # 2k warmup steps, then cosine decay through the final train step.
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=2_000,
+            peak_lr=2.5e-5,
+            decay_steps=30_000,
+            decay_lr=2.5e-6,
+        ),
+        pytorch_training_precision="bfloat16",
+        ema_decay=None,
+        batch_size=96,
         num_train_steps=30_000,
+        save_interval=10_000,
+        policy_metadata={
+            "robot": "dobot_cr5_o6",
+            "action_contract": dobot_policy.ACTION_CONTRACT,
+            "rtc": {
+                "control_hz": 20.0,
+                "action_horizon": 20,
+                "physical_action_dim": 12,
+                "model_action_dim": 32,
+                # Replace this initial value with ceil(P95_RTT_seconds * 20)
+                # after running the read-only latency benchmark.
+                "initial_inference_delay_steps": 4,
+                "prefix_attention_horizon": 10,
+                "num_denoise_steps": 10,
+                "max_guidance_weight": 10.0,
+                "inference_timeout_s": 5.0,
+                "max_consecutive_inference_errors": 3,
+                "request_poll_s": 0.005,
+                "latency_history_size": 100,
+            },
+        },
     ),
     #
     # Fine-tuning Aloha configs.
@@ -909,9 +991,7 @@ _CONFIGS = [
                 ]
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params"
-        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=64,
     ),
@@ -961,16 +1041,14 @@ _CONFIGS = [
         data=RLDSDroidDataConfig(
             repo_id="droid",
             # Set this to the path to your DROID RLDS dataset (the parent directory of the `droid` directory).
-            rlds_data_dir="<path_to_droid_rlds_dataset>",
+            rlds_data_dir=os.environ.get("OPENPI_DROID_RLDS_DIR"),
             action_space=droid_rlds_dataset.DroidActionSpace.JOINT_POSITION,
             assets=AssetsConfig(
                 assets_dir="gs://openpi-assets/checkpoints/pi05_base/assets/",
                 asset_id="droid",
             ),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params"
-        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=1_000,
             peak_lr=5e-5,
@@ -1023,49 +1101,6 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     #
-    # Wuji dual-arm dual-dexterous-hand configs (54D).
-    #
-    TrainConfig(
-        # Multi-dataset training for Wuji with 54D
-        name="pi05_wuji_multi_54d",
-        checkpoint_base_dir="./checkpoints",
-        model=pi0_config.Pi0Config(pi05=True, action_dim=54, action_horizon=100, max_token_len=256),
-        data=LeRobotWujiDataConfig(
-            repo_id="wuji",  # Not used when lerobot_datasets is set
-            base_config=DataConfig(
-                prompt_from_task=True,
-                # Define multiple datasets (weights are ignored in concat mode)
-                lerobot_datasets=(
-                    LeRobotDataset(
-                        repo_id="<path_to_lerobot_dataset_1>",
-                        weight=1.0,  # Weight ignored in concat mode
-                    ),
-                    LeRobotDataset(
-                        repo_id="<path_to_lerobot_dataset_2>",
-                        weight=1.0,  # Weight ignored in concat mode
-                    ),
-                    LeRobotDataset(
-                        repo_id="<path_to_lerobot_dataset_3>",
-                        weight=1.0,  # Weight ignored in concat mode
-                    )
-                ),
-                multi_dataset_mode="concat",  # Use ALL data from all datasets
-            ),
-            extra_delta_transform=True,
-        ),
-        weight_loader=weight_loaders.PartialCheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params"
-        ),
-        num_train_steps=30_000,
-        batch_size=64,
-        lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=1_000,
-            peak_lr=5e-5,
-            decay_steps=30_000,
-            decay_lr=5e-6,
-        ),
-    ),
-    #
     # Debugging configs.
     #
     TrainConfig(
@@ -1104,6 +1139,56 @@ _CONFIGS = [
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
 ]
+
+_CR3_DAGGER_BASE = next(config for config in _CONFIGS if config.name == "pi05_cr3_o6_joint_abs_lora")
+_CONFIGS.append(dataclasses.replace(
+    _CR3_DAGGER_BASE,
+    name="pi05_cr3_o6_dagger_round1_lora",
+    data=dataclasses.replace(_CR3_DAGGER_BASE.data, repo_id="local/cr3_o6_dagger_round1"),
+    # Select the field-tested pi0 checkpoint explicitly. Load model parameters
+    # only; a new run initializes a fresh optimizer and scheduler.
+    weight_loader=weight_loaders.CheckpointWeightLoader(params_path=tyro.MISSING),
+    resume=False,
+))
+
+# Exact task text stored in local/cr3_o6_final_fantasy_20260915 (meta/tasks.jsonl
+# and all 62 episodes). The dataset task string was rewritten on 2026-09-15 21:02,
+# i.e. before this run started, so this is the language condition the checkpoint
+# actually learned. Declaring it here publishes it as server metadata
+# ("task_prompt"), which makes the deployment client reject any other --prompt
+# instead of silently running out of distribution.
+_CR3_FINAL_FANTASY_TASK = (
+    "Identify whether the motor's protruding end faces left or right, "
+    "then grasp, reorient, and place the motor with the protruding end facing upward."
+)
+
+_CONFIGS.append(dataclasses.replace(
+    _CR3_DAGGER_BASE,
+    name="pi05_cr3_o6_final_fantasy_20260915_lora",
+    model=dataclasses.replace(_CR3_DAGGER_BASE.model, dtype="bfloat16"),
+    data=dataclasses.replace(
+        _CR3_DAGGER_BASE.data,
+        repo_id="local/cr3_o6_final_fantasy_20260915",
+        default_prompt=_CR3_FINAL_FANTASY_TASK,
+    ),
+    batch_size=32,
+    resume=False,
+))
+
+_CR3_DATA_V21_TASK = "Pick up the motor and place it on the right side with the protruding side facing left."
+
+_CONFIGS.append(dataclasses.replace(
+    _CR3_DAGGER_BASE,
+    name="pi05_cr3_o6_data_v21_lora",
+    model=dataclasses.replace(_CR3_DAGGER_BASE.model, dtype="bfloat16"),
+    data=dataclasses.replace(
+        _CR3_DAGGER_BASE.data,
+        repo_id="data_v21",
+        default_prompt=_CR3_DATA_V21_TASK,
+    ),
+    batch_size=32,
+    resume=False,
+))
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

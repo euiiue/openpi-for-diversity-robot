@@ -1,6 +1,7 @@
 import dataclasses
 import functools
 import logging
+import os
 import platform
 from typing import Any
 
@@ -100,8 +101,10 @@ def init_train_state(
             model = nnx.merge(graphdef, state)
 
         params = nnx.state(model)
-        # Convert frozen params to bfloat16.
-        params = nnx_utils.state_map(params, config.freeze_filter, lambda p: p.replace(p.value.astype(jnp.bfloat16)))
+        # Match frozen parameter storage to the requested model precision.
+        params = nnx_utils.state_map(
+            params, config.freeze_filter, lambda p: p.replace(p.value.astype(config.model.dtype))
+        )
 
         return training_utils.TrainState(
             step=0,
@@ -200,7 +203,8 @@ def main(config: _config.TrainConfig):
             f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
         )
 
-    jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
+    jax_cache_dir = epath.Path(os.environ.get("OPENPI_JAX_CACHE_DIR", ".cache/jax"))
+    jax.config.update("jax_compilation_cache_dir", str(jax_cache_dir.expanduser().resolve()))
 
     rng = jax.random.key(config.seed)
     train_rng, init_rng = jax.random.split(rng)
