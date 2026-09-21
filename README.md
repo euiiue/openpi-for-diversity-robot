@@ -1,273 +1,192 @@
-# wuji-openpi
+# OpenPI CR3/O6
 
-[中文版](README_zh.md)
+This branch is a focused CR3 arm + O6 hand baseline on top of OpenPI. It keeps
+the complete software path from finalized LeRobot v3 sessions through
+normalization, π0.5 LoRA training, checkpoint serving, and an optional NRC
+hardware client.
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Release](https://img.shields.io/github/v/release/wuji-technology/wuji-openpi)](https://github.com/wuji-technology/wuji-openpi/releases)
-[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-0.5%2B-9cf?logo=google&logoColor=white)](https://github.com/jax-ml/jax)
-[![CUDA](https://img.shields.io/badge/CUDA-12-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![ROS 2 Humble](https://img.shields.io/badge/ROS_2-Humble-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/humble/)
-[![Stars](https://img.shields.io/github/stars/wuji-technology/wuji-openpi?style=social)](https://github.com/wuji-technology/wuji-openpi/stargazers)
+The physical contract is 12 channels: six CR3 joint positions in radians and
+six O6 register values. The CR3/O6 transforms pad those physical state and
+action tensors to the model's 32 channels; each policy result contains a
+20-step action chunk. LeRobot task text is used as the language prompt.
 
-> A fork of [openpi](https://github.com/Physical-Intelligence/openpi) for SFT (supervised fine-tuning) and on-robot deployment of pi0 / pi0.5 VLA policies on **any dual-arm + Wuji Hand configuration**. It adds Wuji-specific data processing, training configs, a dimension-agnostic action pipeline, and a complete ROS2 deployment stack on top of upstream openpi.
+## What is included
 
-<p align="center">
-  <img src="docs/assets/demo.gif" width="80%" alt="wuji-openpi dual-arm + Wuji Hand demo" />
-</p>
+- LeRobot v3 conversion and read-only dataset validation;
+- the `pi05_cr3_o6_joint_abs_lora` training configuration;
+- normalization, training, resume, and WebSocket policy-service commands;
+- a three-camera CR3/O6 NRC client with preview-only and motion-confirmation
+  modes;
+- the required Linux x86_64 NRC binding at
+  `examples/cr3_o6/deploy/vendor/nrc_linux_x86_64/_nrc_host.so`.
 
-<p align="center">
-  <sub>⏩ Full demo shown above at 2× speed. ▶️ Original speed with audio: <a href="docs/assets/demo.mp4">docs/assets/demo.mp4</a></sub>
-</p>
-
-## Configurations
-
-The pipeline is **morphology-agnostic**: any dual-arm + Wuji Hand setup is supported, and the action dimensionality is driven entirely by config. The table below lists the reference config shipped in this repo.
-
-| Embodiment | Reference config | Action dim | Deploy example |
-|---|---|---|---|
-| Dual arm + dual Wuji Hand | `pi05_wuji_multi_54d` | 54 (7+7 arms, 20+20 hands) | [`examples/wuji/`](examples/wuji/) |
-
-> **Adapting to a different morphology.** You don't need this exact 54-dim layout. Set `arm_mode` (`single_left` / `single_right` / `dual`), `arm_dof`, and `hand_dof` in [`examples/wuji/config/deploy.yaml`](examples/wuji/config/deploy.yaml), and the matching `action_dim` in the training config — the same data, training, and deployment path then runs SFT at **any dimensionality**. See [Adapting to a new morphology](#adapting-to-a-new-morphology) below.
-
-## Repository layout
-
-```text
-wuji-openpi/
-├── examples/wuji/                    # dual-arm + Wuji Hand deployment example
-│   ├── config/deploy.yaml            # deploy config (arm/hand DOF, ROS2 topics, broker, control rate)
-│   ├── core/                         # ROS2 interface, timestamp sync, utils
-│   ├── deploy/                       # deployment entry (main.py / ros_env.py)
-│   └── README.md                     # detailed deployment doc
-├── src/openpi/
-│   ├── policies/wuji_policy.py       # WujiInputs / WujiOutputs data mapping
-│   └── training/config.py            # pi05_wuji_multi_54d and other training configs
-├── scripts/
-│   ├── compute_norm_stats.py         # norm-stats computation
-│   ├── train.py                      # training entry
-│   └── serve_policy.py               # policy server entry
-└── docs/                             # upstream openpi docs
-```
+Datasets, model checkpoints, virtual environments, logs, caches, bytecode, and
+machine-specific hardware settings are intentionally not versioned.
 
 ## Requirements
 
-- Linux x86_64
-- NVIDIA GPU, CUDA 12
-- Python 3.11+ with [uv](https://docs.astral.sh/uv/) — the supported installer
-- For deployment: ROS2 Humble (Python 3.10) and a ROS2 topic namespace that matches [wuji-hand-teleop](https://github.com/wuji-technology/wuji-hand-teleop.git)
+Training requires Linux, a supported NVIDIA/JAX environment, Python 3.11, and
+[`uv`](https://docs.astral.sh/uv/). The hardware client additionally requires
+Linux x86_64, CPython 3.12, a compatible NRC controller, an O6 hand, and three
+RealSense cameras. The vendor binding is specific to that deployment platform.
 
-## Installation
+The normal training environment and the robot Python environment are separate:
+use `uv` with Python 3.11 for OpenPI, and a Python 3.12 virtual environment for
+the hardware client.
 
-Dependencies match upstream openpi and are managed with [uv](https://docs.astral.sh/uv/):
-
-```bash
-# 1. clone
-git clone https://github.com/wuji-technology/wuji-openpi
-cd wuji-openpi
-
-# 2. resolve environment (skip LFS smudge so large weights aren't pulled eagerly)
-GIT_LFS_SKIP_SMUDGE=1 uv sync
-GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
-```
-
-## Workflow
-
-End-to-end path from teleoperation capture to closed-loop on-robot inference:
-
-```text
-┌────────────────────┐    ROS2 mcap     ┌──────────────────┐    LeRobot v2.1    ┌──────────────┐
-│  wuji-hand-teleop  │ ───────────────▶ │   Conversion     │ ─────────────────▶ │  SFT Training│
-│  (teleop capture)  │                  │ (mcap → lerobot) │                    │  (this repo) │
-└────────────────────┘                  └──────────────────┘                    └──────┬───────┘
-                                                                                       │
-                                                                                       ▼
-                                                            ┌──────────────────────────────┐
-                                                            │  Policy Server (this repo)   │
-                                                            │  WebSocket / ROS2 inference  │
-                                                            └──────────────┬───────────────┘
-                                                                           │ ROS2 obs/action
-                                                                           ▼
-                                                            ┌──────────────────────────────┐
-                                                            │  dual-arm + Wuji Hand (real) │
-                                                            │  ROS2 bridge: wuji-hand-...  │
-                                                            └──────────────────────────────┘
-```
-
-### Step 1 — Collect teleoperation data
-
-Use [wuji-hand-teleop](https://github.com/wuji-technology/wuji-hand-teleop.git) to teleoperate the robot, recording synchronized trajectories for both arms + both dexterous hands together with the head camera and the left/right wrist cameras. Data is saved as **ROS2 mcap** bags.
-
-### Step 2 — Convert to a LeRobot v2.1 dataset
-
-Convert the ROS2 mcap recordings to LeRobot v2.1 datasets and place them in your training data directory. Dataset fields must line up with `WujiInputs` (see [`src/openpi/policies/wuji_policy.py`](src/openpi/policies/wuji_policy.py)).
-
-Expected fields after conversion (shown for the reference 54-dim layout):
-
-- `observation.state`: state vector (54-dim = 14 from both arms + 40 from both dexterous hands)
-- `observation.images.cam_high`: head camera
-- `observation.images.cam_left_wrist`: left wrist camera
-- `observation.images.cam_right_wrist`: right wrist camera
-- `action`: action sequence (same dimensionality as the state)
-
-### Step 3 — Edit the training config
-
-Training configs live in [`src/openpi/training/config.py`](src/openpi/training/config.py). This repo ships the reference config **`pi05_wuji_multi_54d`**. Before training, adjust:
-
-- `data.repo_id` / `repo_ids`: path(s) to the LeRobot dataset(s) from Step 2 (multiple datasets can be mixed via `LeRobotWujiDataConfig`).
-- `checkpoint_base_dir`: output directory for training checkpoints.
-- The base checkpoint path inside `weight_loader` (e.g. `pi05_base/params`).
-- `model.action_dim`: set to your morphology's total DOF (see [Adapting to a new morphology](#adapting-to-a-new-morphology)).
-- Hyperparameters: batch size, training steps, learning rate, etc.
-
-Reference snippet (excerpted from `pi05_wuji_multi_54d`):
-
-```python
-TrainConfig(
-    name="pi05_wuji_multi_54d",
-    checkpoint_base_dir="/path/to/your/checkpoints",
-    model=pi0_config.Pi0Config(pi05=True, action_dim=54, action_horizon=100, max_token_len=256),
-    data=LeRobotWujiDataConfig(
-        repo_ids=[
-            "/path/to/lerobot_dataset_1",
-            "/path/to/lerobot_dataset_2",
-            # ...
-        ],
-        ...
-    ),
-    weight_loader=PartialCheckpointWeightLoader(
-        "/path/to/pi05_base/params"
-    ),
-)
-```
-
-### Step 4 — Compute norm stats and train
+## Clone and initialize
 
 ```bash
-# Compute normalization statistics (only on first run or after data changes)
-uv run scripts/compute_norm_stats.py --config-name pi05_wuji_multi_54d
-
-# Launch training (add --overwrite to overwrite an existing experiment)
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-  uv run scripts/train.py pi05_wuji_multi_54d \
-  --exp-name=my_wuji_run
+git clone --branch cr5-o6-pi05 https://github.com/euiiue/openpi-for-diversity-robot.git openpi_cr3_o6
+cd openpi_cr3_o6
+uv sync
+source examples/cr3_o6/env.sh
+cd "$OPENPI_ROOT"
 ```
 
-Training logs go to the console and to Weights & Biases; checkpoints are written under `checkpoint_base_dir`.
+Sourcing `env.sh` derives all default writable locations from the checkout:
+`data/`, `assets/`, `checkpoints/`, `.cache/jax/`, and the deployment-config
+directory. Override any of these before sourcing the file when storage lives
+elsewhere.
 
-### Step 5 — On-robot inference and deployment
+## 1. Convert finalized LeRobot v3 sessions
 
-Deployment is a **policy server + ROS2 client** that exchanges observations/actions with wuji-hand-teleop.
+The converter accepts only successful, 20 Hz, joint-mode sessions with the
+expected CR3/O6 fields. Point the variables below at one or more finalized
+session directories; use additional `--source-roots` arguments for more
+sessions.
 
 ```bash
-# Policy server (ML side)
-uv run scripts/serve_policy.py policy:checkpoint \
-  --policy.config=pi05_wuji_multi_54d \
-  --policy.dir=/path/to/checkpoint
+source examples/cr3_o6/env.sh
+cd "$OPENPI_ROOT"
+
+export CR3_O6_DATASET_ID="local/cr3_o6_ceshi_reviewed_20260912"
+export CR3_O6_DATASET_ROOT="$HF_LEROBOT_HOME/$CR3_O6_DATASET_ID"
+export CR3_O6_SOURCE_ROOT_1="$OPENPI_DATA_HOME/raw/session_001"
+export CR3_O6_SOURCE_ROOT_2="$OPENPI_DATA_HOME/raw/session_002"
+
+uv run examples/cr3_o6/convert_data_to_lerobot.py \
+  --source-roots "$CR3_O6_SOURCE_ROOT_1" "$CR3_O6_SOURCE_ROOT_2" \
+  --repo-id "$CR3_O6_DATASET_ID" \
+  --output-root "$CR3_O6_DATASET_ROOT"
+
+uv run examples/cr3_o6/check_dataset.py \
+  --root "$CR3_O6_DATASET_ROOT" \
+  --repo-id "$CR3_O6_DATASET_ID"
 ```
+
+The checked-in training configuration uses the dataset identifier shown above.
+If you deliberately choose another identifier, change that one `repo_id` in
+`pi05_cr3_o6_joint_abs_lora` before computing statistics and training.
+
+## 2. Compute normalization statistics and train
 
 ```bash
-# Robot control client (ROS2 side) — run from project root, in a ROS2 env
-# whose Python has openpi-client and rclpy available
-source /opt/ros/humble/setup.bash
-python3 -m wuji.deploy.main -c examples/wuji/config/deploy.yaml
+source examples/cr3_o6/env.sh
+cd "$OPENPI_ROOT"
+
+export CONFIG_NAME=pi05_cr3_o6_joint_abs_lora
+export EXP_NAME=cr3_o6_run
+
+uv run scripts/compute_norm_stats.py --config-name "$CONFIG_NAME"
+uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME"
 ```
 
-The client subscribes to the joint-state and image topics published by wuji-hand-teleop, packages them into an observation, sends it to the policy server over WebSocket, receives an action chunk, and publishes the chunk back as ROS2 joint commands.
+The current CR3/O6 baseline sets the JAX model `dtype` to `float32`; it is
+therefore neither pure FP16 nor FP16 mixed-precision training. Its learning-rate
+schedule peaks at `2.5e-5` after 500 warmup steps and decays to `2.5e-6` by
+step 45,000. It freezes the PaliGemma image branch as defined by the
+configuration's freeze filter.
 
-> For full deployment details (YAML config, broker modes, topic lists, troubleshooting), see [`examples/wuji/README.md`](examples/wuji/README.md).
+To continue an existing experiment, preserve the same `CONFIG_NAME` and
+`EXP_NAME` and add `--resume`:
 
-## Adapting to a new morphology
-
-The reference config is 54-dim, but **nothing in the pipeline is hard-wired to that number**. To run SFT and deployment on a different dual-arm + Wuji Hand setup:
-
-1. **Deploy YAML** — set the dimension fields in [`examples/wuji/config/deploy.yaml`](examples/wuji/config/deploy.yaml):
-   ```yaml
-   arm_mode: "dual"   # or "single_left" / "single_right"
-   arm_dof: 7         # DOF per arm
-   hand_dof: 20       # DOF per Wuji Hand
-   ```
-   The client builds the observation/action vectors from these, so the deployed dimensionality follows the YAML.
-2. **Training config** — set `model.action_dim` in [`src/openpi/training/config.py`](src/openpi/training/config.py) to the matching total DOF (e.g. `arm_mode=dual` → `2 * (arm_dof + hand_dof)`), and make sure your LeRobot dataset's `observation.state` / `action` widths agree.
-3. **Migrate weights** — `PartialCheckpointWeightLoader` silently skips shape-mismatched layers (typically `action_proj`), so a base checkpoint trained at one dimensionality can seed SFT at another without manual surgery.
-
-This is the only thing that changes between morphologies — data conversion, training, and the ROS2 deployment path are all identical.
-
-## Architecture
-
-This repo keeps all upstream openpi capabilities (pi0, pi0-FAST, pi0.5) and layers Wuji-specific modules on top: a dimension-agnostic action pipeline, multi-dataset training, real-time trajectory smoothing, and a full ROS2 deployment package.
-
-<details>
-<summary>Deep dive — what this fork adds on top of upstream openpi</summary>
-
-### Dual-arm + dual dexterous-hand training and deployment
-
-- **Config-driven action space**: the reference `pi05_wuji_multi_54d` covers 7+7 (arms) + 20+20 (hands) = 54 DOF, but the dimensionality is set by config — see [Adapting to a new morphology](#adapting-to-a-new-morphology).
-- **Data config**: `LeRobotWujiDataConfig` — native arm + dexterous-hand pipeline.
-- **Full ROS2 deployment package** at [`examples/wuji/`](examples/wuji/): topic subscription/publishing, timestamp synchronization, broker integration — drop-in ready to talk to wuji-hand-teleop.
-
-### Multi-dataset training
-
-- `ConcatLeRobotDataset` and `MultiLeRobotDataset` (with weighted sampling) for mixing multiple recording sessions.
-- New `DataConfig` fields:
-  - `lerobot_datasets`: list of datasets.
-  - `multi_dataset_mode`: switch between concatenation and weighted sampling.
-- **Per-dataset prompt transform**: every sub-dataset can carry its own language instruction.
-
-### RTG (Real-Time Trajectory Generation)
-
-Smooths the boundary between consecutive action chunks:
-
-- `RTGActionBroker` and a QP-based variant.
-- Smoothing utilities: `qp_smooth_prefix`, `cubic_smooth_prefix`, `build_time_window_old_reference`.
-
-Follows the paper `arXiv:2507.17141`: when the client asynchronously receives a new chunk, its prefix is smoothed against the currently executing trajectory before being stitched in.
-
-### General tooling improvements
-
-- **`PartialCheckpointWeightLoader`**: when loading a base checkpoint, layers whose shape doesn't match (typically `action_proj`) are silently skipped, making it trivial to migrate between different action dimensionalities.
-- **[`examples/open_loop_eval.py`](examples/open_loop_eval.py)**: a general open-loop evaluator with built-in RTG comparison, useful for replaying trained checkpoints and benchmarking smoothing strategies.
-
-> All other features (LIBERO / ALOHA / DROID examples, PyTorch backend, etc.) are unchanged from upstream — see the original openpi docs and the corresponding subdirectories under `examples/`.
-
-</details>
-
-## Development
-
-Dependencies and the full upstream model docs live under [`docs/`](docs/) and the official [openpi](https://github.com/Physical-Intelligence/openpi) repository — this README focuses only on Wuji-related usage.
-
-## Related Projects
-
-- [wuji-hand-teleop](https://github.com/wuji-technology/wuji-hand-teleop.git) — teleoperation capture (ROS2 mcap) and the on-robot ROS2 bridge
-- [wujihandpy](https://github.com/wuji-technology/wujihandpy) — Wuji Hand SDK (C++ core with Python bindings)
-- [wujihandros2](https://github.com/wuji-technology/wujihandros2) — ROS 2 driver for Wuji Hand
-- [docs.wuji.tech](https://docs.wuji.tech) — Official Wuji documentation portal
-
-## Acknowledgements
-
-This project builds on the following open-source projects:
-
-- [openpi](https://github.com/Physical-Intelligence/openpi) — upstream VLA training/inference framework (pi0 / pi0-FAST / pi0.5)
-- [LeRobot](https://github.com/huggingface/lerobot) — dataset format and tooling
-- [JAX](https://github.com/jax-ml/jax) — the training/inference backend
-
-## Contributors
-
-- [Han Duo](https://github.com/HanDuo-223)
-
-## Citation
-
-If you find this project useful, please consider citing:
-
-```bibtex
-@software{wuji2026openpi,
-  title={Wuji-OpenPI: SFT and Deployment of VLA Policies on Dual-Arm + Wuji Hand Robots},
-  author={{Wuji Technology}},
-  year={2026},
-  url={https://github.com/wuji-technology/wuji-openpi}
-}
+```bash
+uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" --resume
 ```
 
-## License
+## 3. Serve a trained checkpoint
 
-Apache-2.0 (inherited from upstream openpi).
+Choose a completed checkpoint step from the experiment directory, then start
+the WebSocket policy service:
+
+```bash
+source examples/cr3_o6/env.sh
+cd "$OPENPI_ROOT"
+
+export CONFIG_NAME=pi05_cr3_o6_joint_abs_lora
+export EXP_NAME=cr3_o6_run
+export CHECKPOINT_STEP=45000
+export POLICY_DIR="$OPENPI_CHECKPOINT_DIR/$CONFIG_NAME/$EXP_NAME/$CHECKPOINT_STEP"
+
+uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
+  --policy.config "$CONFIG_NAME" \
+  --policy.dir "$POLICY_DIR"
+```
+
+## 4. Configure and run the optional hardware client
+
+Create local copies of the safe templates. These files are ignored by Git and
+must contain the controller address, O6 serial device, camera serial numbers,
+site-reviewed workspace bounds, and motion limits for the specific robot.
+
+```bash
+source examples/cr3_o6/env.sh
+cd "$OPENPI_ROOT"
+
+cp "$CR3_O6_CONFIG_DIR/robot.example.yaml" "$CR3_O6_CONFIG_DIR/robot.local.yaml"
+cp "$CR3_O6_CONFIG_DIR/camera.example.yaml" "$CR3_O6_CONFIG_DIR/camera.local.yaml"
+```
+
+Create the deployment environment and install both its hardware dependencies
+and the WebSocket client package:
+
+```bash
+"$CR3_O6_DEPLOY_PYTHON" -m venv .venv-cr3-deploy
+export CR3_O6_DEPLOY_PYTHON="$OPENPI_ROOT/.venv-cr3-deploy/bin/python"
+"$CR3_O6_DEPLOY_PYTHON" -m pip install --upgrade pip
+"$CR3_O6_DEPLOY_PYTHON" -m pip install -r examples/cr3_o6/deploy/requirements.txt
+"$CR3_O6_DEPLOY_PYTHON" -m pip install -e packages/openpi-client
+```
+
+Set the task text to the task used in the converted dataset. Start with
+preview-only mode: it connects cameras and the policy service but discards all
+model actions before any robot motion command is issued.
+
+```bash
+export CR3_O6_TASK_PROMPT="task text used by the converted dataset"
+
+"$CR3_O6_DEPLOY_PYTHON" examples/cr3_o6/deploy/main_rtc.py \
+  --host 127.0.0.1 --port 8000 \
+  --config-dir "$CR3_O6_CONFIG_DIR" \
+  --prompt "$CR3_O6_TASK_PROMPT" \
+  --preview-port 8080 --preview-only
+```
+
+Only after reviewing the local configuration, the live camera preview, robot
+state, and workspace may an operator use `--confirm-motion`. It is intentionally
+required by the client before ServoJ control can start.
+
+```bash
+"$CR3_O6_DEPLOY_PYTHON" examples/cr3_o6/deploy/main_rtc.py \
+  --host 127.0.0.1 --port 8000 \
+  --config-dir "$CR3_O6_CONFIG_DIR" \
+  --prompt "$CR3_O6_TASK_PROMPT" \
+  --confirm-motion
+```
+
+## Verification
+
+Run the focused baseline suite without a robot, O6 hand, or camera connection:
+
+```bash
+env -u PYTHONPATH uv run pytest \
+  examples/cr3_o6/tests/test_portable_release.py \
+  examples/cr3_o6/tests/test_joint_contract.py \
+  examples/cr3_o6/tests/test_rtc_buffering.py \
+  examples/cr3_o6/tests/test_camera_preview.py -q
+```
+
+The preview tests use a loopback HTTP server. The `env -u PYTHONPATH` prefix is
+harmless when unset and prevents a shell-injected, unrelated Python environment
+from loading external pytest plugins.

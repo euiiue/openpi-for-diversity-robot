@@ -55,3 +55,22 @@ def test_only_baseline_cr3_o6_config_is_registered():
         "pi05_dobot_cr5_o6_roi_lora",
     }
     assert names.isdisjoint(removed)
+
+
+def test_published_baseline_has_no_developer_paths_or_stage_docs():
+    root = Path(__file__).resolve().parents[3]
+    prohibited = ("/" + "home/", "/mnt/" + "pi-data/", "/absolute" + "/path", "/path" + "/to")
+    published = (
+        root / "README.md",
+        root / "examples" / "cr3_o6" / "env.sh",
+        root / "examples" / "cr3_o6" / "deploy" / "interface.py",
+    )
+    for path in published:
+        assert not any(value in path.read_text(encoding="utf-8") for value in prohibited), path
+
+    removed = (
+        root / "examples" / "cr3_o6" / "AUDIT.md",
+        root / "examples" / "cr3_o6" / "DAGGER.md",
+        root / "examples" / "cr3_o6" / "README_TRAINING.md",
+    )
+    assert all(not path.exists() for path in removed)

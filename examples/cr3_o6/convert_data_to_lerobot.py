@@ -1,4 +1,4 @@
-"""Convert explicitly selected, finalized GELLO joint sessions from LeRobot v3 to v2.1."""
+"""Convert explicitly selected, finalized CR3/O6 joint sessions from LeRobot v3 to v2.1."""
 
 from contextlib import ExitStack
 from functools import partial
