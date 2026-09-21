@@ -43,6 +43,13 @@ def create_trained_policy(
         presence of "model.safensors" in the checkpoint directory.
     """
     repack_transforms = repack_transforms or transforms.Group()
+    metadata = dict(train_config.policy_metadata or {})
+    if isinstance(train_config.data, _config.LeRobotDobotCR5O6DataConfig):
+        task_prompt = train_config.data.default_prompt
+        if task_prompt is not None and default_prompt is not None and default_prompt != task_prompt:
+            raise ValueError("Dobot inference default prompt must match its training configuration")
+        default_prompt = task_prompt if task_prompt is not None else default_prompt
+        metadata["task_prompt"] = task_prompt
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
 
     # Check if this is a PyTorch model by looking for model.safetensors
@@ -88,7 +95,7 @@ def create_trained_policy(
             *repack_transforms.outputs,
         ],
         sample_kwargs=sample_kwargs,
-        metadata=train_config.policy_metadata,
+        metadata=metadata,
         is_pytorch=is_pytorch,
         pytorch_device=pytorch_device if is_pytorch else None,
     )
