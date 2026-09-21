@@ -137,11 +137,18 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-cr3-deploy/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# CR3/O6 local runtime state.
+logs/
+.cache/
+examples/cr3_o6/deploy/config/*.local.yaml
+examples/cr3_o6/.env
 
 # Spyder project settings
 .spyderproject

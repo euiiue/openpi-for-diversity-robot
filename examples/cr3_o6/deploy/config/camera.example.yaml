@@ -1,0 +1,9 @@
+# Copy this file to camera.local.yaml and set the three camera serial numbers.
+global_camera_serial: null
+wrist_camera_serial: null
+right_wrist_camera_serial: null
+camera_width: 640
+camera_height: 480
+camera_fps: 30
+camera_frame_max_age_s: 0.5
+camera_max_skew_s: 0.1

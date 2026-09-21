@@ -1,0 +1,22 @@
+# Copy this file to robot.local.yaml and replace the safe template values.
+controller_ip: 192.0.2.1
+robot_num: 1
+command_port: 6001
+servo_port: 7000
+servoj_vmax: 50.1
+servoj_amax: 100.0
+servoj_jmax: 200.0
+o6_port: /dev/ttyUSB0
+o6_baudrate: 115200
+o6_hand_id: 39
+o6_feedback_max_age_s: 1.0
+action_max_age_s: 0.35
+workspace_min_m: null
+workspace_max_m: null
+max_joint_step_rad: null
+max_tracking_error_rad: null
+lock_rpy: false
+o6_speed: null
+o6_torque: null
+action_contract: cr3_q1_q6_absolute_plus_o6_target_6d
+joint_target_max_speed_rad_s: 0.5
