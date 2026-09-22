@@ -1,40 +1,34 @@
 # OpenPI CR3/O6
 
-This branch is a focused CR3 arm + O6 hand baseline on top of OpenPI. It keeps
-the complete software path from finalized LeRobot v3 sessions through
-normalization, π0.5 LoRA training, checkpoint serving, and an optional NRC
-hardware client.
+本分支是在 OpenPI 基础上整理出的 CR3 机械臂 + O6 灵巧手最小基线。它保留从已完成的
+LeRobot v3 会话开始，经归一化、π0.5 LoRA 训练、检查点服务，到可选 NRC 实机客户端的
+完整软件链路。
 
-The physical contract is 12 channels: six CR3 joint positions in radians and
-six O6 register values. The CR3/O6 transforms pad those physical state and
-action tensors to the model's 32 channels; each policy result contains a
-20-step action chunk. LeRobot task text is used as the language prompt.
+物理控制契约为 12 个通道：6 个以弧度表示的 CR3 关节位置，以及 6 个 O6 寄存器值。
+CR3/O6 变换会将这些物理状态和动作张量补齐到模型的 32 通道；每次策略推理返回一个
+20 步动作块。LeRobot 中的任务文本会作为语言提示词输入模型。
 
-## What is included
+## 包含内容
 
-- LeRobot v3 conversion and read-only dataset validation;
-- the `pi05_cr3_o6_joint_abs_lora` training configuration;
-- normalization, training, resume, and WebSocket policy-service commands;
-- a three-camera CR3/O6 NRC client with preview-only and motion-confirmation
-  modes;
-- the required Linux x86_64 NRC binding at
-  `examples/cr3_o6/deploy/vendor/nrc_linux_x86_64/_nrc_host.so`.
+- LeRobot v3 数据转换与只读数据集校验；
+- `pi05_cr3_o6_joint_abs_lora` 训练配置；
+- 归一化、训练、断点续训和 WebSocket 策略服务命令；
+- 支持仅预览和显式确认运动模式的三相机 CR3/O6 NRC 客户端；
+- Linux x86_64 所需的 NRC 绑定：
+  `examples/cr3_o6/deploy/vendor/nrc_linux_x86_64/_nrc_host.so`。
 
-Datasets, model checkpoints, virtual environments, logs, caches, bytecode, and
-machine-specific hardware settings are intentionally not versioned.
+数据集、模型检查点、虚拟环境、日志、缓存、字节码和机器专属硬件设置均不会纳入版本控制。
 
-## Requirements
+## 环境要求
 
-Training requires Linux, a supported NVIDIA/JAX environment, Python 3.11, and
-[`uv`](https://docs.astral.sh/uv/). The hardware client additionally requires
-Linux x86_64, CPython 3.12, a compatible NRC controller, an O6 hand, and three
-RealSense cameras. The vendor binding is specific to that deployment platform.
+训练需要 Linux、受支持的 NVIDIA/JAX 环境、Python 3.11 和
+[`uv`](https://docs.astral.sh/uv/)。实机客户端额外需要 Linux x86_64、CPython 3.12、
+兼容的 NRC 控制器、O6 灵巧手和三台 RealSense 相机。供应商绑定仅适用于该部署平台。
 
-The normal training environment and the robot Python environment are separate:
-use `uv` with Python 3.11 for OpenPI, and a Python 3.12 virtual environment for
-the hardware client.
+训练环境与机器人 Python 环境相互独立：OpenPI 使用 Python 3.11 + `uv`，实机客户端使用
+Python 3.12 虚拟环境。
 
-## Clone and initialize
+## 克隆与初始化
 
 ```bash
 git clone --branch cr5-o6-pi05 https://github.com/euiiue/openpi-for-diversity-robot.git openpi_cr3_o6
@@ -44,17 +38,13 @@ source examples/cr3_o6/env.sh
 cd "$OPENPI_ROOT"
 ```
 
-Sourcing `env.sh` derives all default writable locations from the checkout:
-`data/`, `assets/`, `checkpoints/`, `.cache/jax/`, and the deployment-config
-directory. Override any of these before sourcing the file when storage lives
-elsewhere.
+执行 `env.sh` 后，所有默认可写目录都会从当前检出目录推导：`data/`、`assets/`、
+`checkpoints/`、`.cache/jax/` 和部署配置目录。若存储位置不同，请在执行该文件前覆盖相应变量。
 
-## 1. Convert finalized LeRobot v3 sessions
+## 1. 转换已完成的 LeRobot v3 会话
 
-The converter accepts only successful, 20 Hz, joint-mode sessions with the
-expected CR3/O6 fields. Point the variables below at one or more finalized
-session directories; use additional `--source-roots` arguments for more
-sessions.
+转换器仅接受成功完成、20 Hz、关节控制模式且具备预期 CR3/O6 字段的会话。请将下列变量指向
+一个或多个已完成会话目录；如需更多会话，可继续追加 `--source-roots` 参数。
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -75,11 +65,10 @@ uv run examples/cr3_o6/check_dataset.py \
   --repo-id "$CR3_O6_DATASET_ID"
 ```
 
-The checked-in training configuration uses the dataset identifier shown above.
-If you deliberately choose another identifier, change that one `repo_id` in
-`pi05_cr3_o6_joint_abs_lora` before computing statistics and training.
+仓库内的训练配置使用上述数据集标识。若有意改用其他标识，请在计算统计量和训练之前，修改
+`pi05_cr3_o6_joint_abs_lora` 中对应的 `repo_id`。
 
-## 2. Compute normalization statistics and train
+## 2. 计算归一化统计量并训练
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -92,23 +81,19 @@ uv run scripts/compute_norm_stats.py --config-name "$CONFIG_NAME"
 uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME"
 ```
 
-The current CR3/O6 baseline sets the JAX model `dtype` to `float32`; it is
-therefore neither pure FP16 nor FP16 mixed-precision training. Its learning-rate
-schedule peaks at `2.5e-5` after 500 warmup steps and decays to `2.5e-6` by
-step 45,000. It freezes the PaliGemma image branch as defined by the
-configuration's freeze filter.
+当前 CR3/O6 基线将 JAX 模型 `dtype` 设置为 `float32`，因此既不是纯 FP16 训练，也不是
+FP16 混合精度训练。学习率在预热 500 步后达到 `2.5e-5`，并在第 45,000 步衰减至
+`2.5e-6`。配置中的冻结过滤规则会冻结 PaliGemma 的图像分支。
 
-To continue an existing experiment, preserve the same `CONFIG_NAME` and
-`EXP_NAME` and add `--resume`:
+如需续训，请保持相同的 `CONFIG_NAME` 和 `EXP_NAME`，并增加 `--resume`：
 
 ```bash
 uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" --resume
 ```
 
-## 3. Serve a trained checkpoint
+## 3. 启动已训练检查点的策略服务
 
-Choose a completed checkpoint step from the experiment directory, then start
-the WebSocket policy service:
+从实验目录选择已完成的检查点步数，再启动 WebSocket 策略服务：
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -124,11 +109,10 @@ uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
   --policy.dir "$POLICY_DIR"
 ```
 
-## 4. Configure and run the optional hardware client
+## 4. 配置并运行可选实机客户端
 
-Create local copies of the safe templates. These files are ignored by Git and
-must contain the controller address, O6 serial device, camera serial numbers,
-site-reviewed workspace bounds, and motion limits for the specific robot.
+先从安全模板创建本地配置副本。这些文件会被 Git 忽略，必须填写本机的控制器地址、O6 串口设备、
+相机序列号、经现场审核的工作空间边界和运动限制。
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -138,8 +122,7 @@ cp "$CR3_O6_CONFIG_DIR/robot.example.yaml" "$CR3_O6_CONFIG_DIR/robot.local.yaml"
 cp "$CR3_O6_CONFIG_DIR/camera.example.yaml" "$CR3_O6_CONFIG_DIR/camera.local.yaml"
 ```
 
-Create the deployment environment and install both its hardware dependencies
-and the WebSocket client package:
+创建部署环境，并安装实机依赖和 WebSocket 客户端包：
 
 ```bash
 "$CR3_O6_DEPLOY_PYTHON" -m venv .venv-cr3-deploy
@@ -149,9 +132,8 @@ export CR3_O6_DEPLOY_PYTHON="$OPENPI_ROOT/.venv-cr3-deploy/bin/python"
 "$CR3_O6_DEPLOY_PYTHON" -m pip install -e packages/openpi-client
 ```
 
-Set the task text to the task used in the converted dataset. Start with
-preview-only mode: it connects cameras and the policy service but discards all
-model actions before any robot motion command is issued.
+将任务文本设为转换后数据集使用的任务文本。请先使用仅预览模式：它会连接相机和策略服务，但会在
+下发任何机器人运动命令之前丢弃全部模型动作。
 
 ```bash
 export CR3_O6_TASK_PROMPT="task text used by the converted dataset"
@@ -163,9 +145,8 @@ export CR3_O6_TASK_PROMPT="task text used by the converted dataset"
   --preview-port 8080 --preview-only
 ```
 
-Only after reviewing the local configuration, the live camera preview, robot
-state, and workspace may an operator use `--confirm-motion`. It is intentionally
-required by the client before ServoJ control can start.
+只有在审核本地配置、实时相机预览、机器人状态和工作空间之后，操作员才可使用
+`--confirm-motion`。客户端在启动 ServoJ 控制前会刻意要求这一显式确认。
 
 ```bash
 "$CR3_O6_DEPLOY_PYTHON" examples/cr3_o6/deploy/main_rtc.py \
@@ -175,9 +156,9 @@ required by the client before ServoJ control can start.
   --confirm-motion
 ```
 
-## Verification
+## 验证
 
-Run the focused baseline suite without a robot, O6 hand, or camera connection:
+无需连接机器人、O6 灵巧手或相机，即可运行以下基线测试套件：
 
 ```bash
 env -u PYTHONPATH uv run pytest \
@@ -187,6 +168,5 @@ env -u PYTHONPATH uv run pytest \
   examples/cr3_o6/tests/test_camera_preview.py -q
 ```
 
-The preview tests use a loopback HTTP server. The `env -u PYTHONPATH` prefix is
-harmless when unset and prevents a shell-injected, unrelated Python environment
-from loading external pytest plugins.
+预览测试会启动回环 HTTP 服务。`env -u PYTHONPATH` 在变量未设置时无副作用，并可避免 shell
+注入的无关 Python 环境加载外部 pytest 插件。
