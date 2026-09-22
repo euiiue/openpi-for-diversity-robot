@@ -7,7 +7,7 @@ on:
 jobs:
   run_tests:
     name: Run Tests
-    runs-on: ubuntu-latest  # temporary: self-hosted openpi-verylarge offline, see PR #1
+    runs-on: openpi-verylarge
     env:
       GIT_LFS_SKIP_SMUDGE: true
     steps:
@@ -28,14 +28,4 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run tests
-        # On ubuntu-latest (7GB RAM, no GPU) we skip tests that load full
-        # JAX/Pi0/Gemma models — they OOM-kill the runner. Drop these
-        # ignores once the self-hosted `openpi-verylarge` runner is back.
-        run: |
-          uv run pytest --strict-markers -m "not manual" \
-            --ignore=src/openpi/models/model_test.py \
-            --ignore=src/openpi/models/pi0_test.py \
-            --ignore=src/openpi/models/tokenizer_test.py \
-            --ignore=src/openpi/policies/policy_test.py \
-            --ignore=src/openpi/training/data_loader_test.py \
-            --ignore=scripts/train_test.py
+        run: uv run pytest --strict-markers -m "not manual"
