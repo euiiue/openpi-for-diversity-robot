@@ -1,2 +1,2 @@
-# This adaptation needs the same vendor binary as the robot-side GELLO runtime.
+# The deployment adapter needs this vendor binary at runtime.
 !_nrc_host.so

@@ -258,7 +258,7 @@ class InterfaceConfig:
     # collection-time tracking residuals, not per-cycle displacement commands:
     #     desired_tcp = current_feedback_tcp + action[:6]
     # These limits are therefore applied to successive commanded TCP targets,
-    # not to the model residual itself. Defaults match the GELLO collection path.
+    # not to the model residual itself. Defaults match the 20 Hz dataset contract.
     max_tcp_speed_mm_s: float = 150.0
     max_tcp_angular_speed_rad_s: float = 0.1
     tcp_tracker_max_dt_s: float = 0.05
@@ -1321,7 +1321,7 @@ class DobotCR5O6Interface:
         if raw.shape != (6,) or not np.all(np.isfinite(raw)):
             raise RuntimeError(f"CR5 TCP 反馈无效: {raw}")
         # This NRC SDK returns TCP XYZ in mm and ABC in radians. Joint
-        # coordinates alone use degrees, as in the GELLO collection runtime.
+        # coordinates alone use degrees in this NRC SDK.
         return np.concatenate([raw[:3] / 1000.0, raw[3:6]]).astype(np.float32)
 
     def get_o6_positions(self) -> np.ndarray:

@@ -57,6 +57,30 @@ def test_only_baseline_cr3_o6_config_is_registered():
     assert names.isdisjoint(removed)
 
 
+def test_baseline_policy_has_no_legacy_collection_runtime():
+    from openpi.policies import Dobot_policy
+
+    legacy_symbols = {
+        "DobotCollectionRobot",
+        "GelloCommandAdapter",
+        "GelloCommandSource",
+        "RawEpisodeRecorder",
+        "build_expert_action",
+        "collect_expert_episode",
+    }
+    assert all(not hasattr(Dobot_policy, name) for name in legacy_symbols)
+
+
+def test_published_baseline_has_no_legacy_collection_references():
+    root = Path(__file__).resolve().parents[3]
+    runtime_sources = (
+        root / "src" / "openpi" / "policies" / "Dobot_policy.py",
+        root / "examples" / "cr3_o6" / "deploy" / "interface.py",
+        root / "examples" / "cr3_o6" / "deploy" / "vendor" / "nrc_linux_x86_64" / ".gitignore",
+    )
+    assert all("gello" not in path.read_text(encoding="utf-8").lower() for path in runtime_sources)
+
+
 def test_published_baseline_has_no_developer_paths_or_stage_docs():
     root = Path(__file__).resolve().parents[3]
     prohibited = ("/" + "home/", "/mnt/" + "pi-data/", "/absolute" + "/path", "/path" + "/to")

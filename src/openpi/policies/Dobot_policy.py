@@ -1,25 +1,16 @@
-"""DOBOT CR5 + LinkerHand O6 collection and OpenPI policy contracts.
-
-This module intentionally keeps the Phase 6 raw-data contract and the Phase 9
-training/inference transforms together.  Raw episode recording is not a
-LeRobot conversion: it only persists synchronized source observations and the
-12D expert command so conversion can be performed in a later phase.
-"""
+"""CR3/O6 OpenPI policy transforms and runtime contracts."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 import dataclasses
-import json
 import math
-from pathlib import Path
 import threading
 import time
 from typing import Any, Protocol
 
 import einops
 import numpy as np
-from PIL import Image
 
 from openpi import transforms
 from openpi.models import model as _model
@@ -81,266 +72,6 @@ def _parse_image(image: Any) -> np.ndarray:
         raise TypeError(f"unsupported image dtype: {array.dtype}")
 
     return np.ascontiguousarray(np.clip(array, 0, 255).astype(np.uint8))
-
-
-class GelloCommandSource(Protocol):
-    """Minimal Phase 6 boundary expected from the existing GELLO frontend."""
-
-    def get_command(self) -> Mapping[str, Any]:
-        """Return final ``tcp_delta`` and ``o6_target`` values for one cycle."""
-
-
-class DobotCollectionRobot(Protocol):
-    """Robot-side methods used by the 20 Hz collector."""
-
-    def get_images(self) -> Mapping[str, Any]: ...
-
-    def get_state(self) -> np.ndarray: ...
-
-    def apply_action(self, action: Sequence[float]) -> np.ndarray: ...
-
-
-@dataclasses.dataclass(frozen=True)
-class GelloCommandAdapter:
-    """Adapt existing GELLO callbacks to the fixed 12D expert-action contract.
-
-    ``read_tcp_delta`` must already apply scale, deadzone and clamp and return
-    ``[dX, dY, dZ, dRoll, dPitch, dYaw]`` in metres/radians.  Gesture names are
-    resolved to the actual six O6 register targets before the action is logged.
-    """
-
-    read_tcp_delta: Callable[[], Sequence[float]]
-    read_gesture_id: Callable[[], str]
-    gestures: Mapping[str, Sequence[float]]
-
-    def __post_init__(self) -> None:
-        if not self.gestures:
-            raise ValueError("gestures must not be empty")
-        for name, target in self.gestures.items():
-            if not str(name).strip():
-                raise ValueError("gesture names must not be empty")
-            values = _finite_vector(target, O6_DIM, f"gesture {name!r}")
-            if np.any((values < 0.0) | (values > 255.0)):
-                raise ValueError(f"gesture {name!r} must stay in O6 range 0..255")
-
-    def get_command(self) -> dict[str, np.ndarray]:
-        tcp_delta = _finite_vector(self.read_tcp_delta(), 6, "tcp_delta")
-        gesture_id = str(self.read_gesture_id()).strip()
-        if gesture_id not in self.gestures:
-            raise KeyError(f"unknown GELLO gesture: {gesture_id!r}")
-        o6_target = _finite_vector(self.gestures[gesture_id], O6_DIM, "o6_target")
-        return {"tcp_delta": tcp_delta, "o6_target": o6_target}
-
-
-def build_expert_action(command: Mapping[str, Any]) -> np.ndarray:
-    """Build the exact 12D command prepared for IK and O6 RS485 output."""
-
-    missing = {"tcp_delta", "o6_target"} - set(command)
-    if missing:
-        raise KeyError(f"GELLO command is missing keys: {sorted(missing)}")
-    tcp_delta = _finite_vector(command["tcp_delta"], 6, "tcp_delta")
-    o6_target = _finite_vector(command["o6_target"], O6_DIM, "o6_target")
-    if np.any((o6_target < 0.0) | (o6_target > 255.0)):
-        raise ValueError("o6_target must stay in O6 range 0..255")
-    return np.concatenate([tcp_delta, o6_target]).astype(np.float32)
-
-
-class RawEpisodeRecorder:
-    """Persist one Phase 6 episode without performing any format conversion."""
-
-    def __init__(
-        self,
-        root_dir: str | Path,
-        *,
-        episode_index: int,
-        task: str = DEFAULT_TASK_PROMPT,
-        orientation: str,
-        fps: int = RAW_DATA_FPS,
-    ) -> None:
-        if int(episode_index) < 0:
-            raise ValueError("episode_index must be non-negative")
-        if int(fps) != RAW_DATA_FPS:
-            raise ValueError(f"Phase 6 collection must run at {RAW_DATA_FPS} Hz")
-        if not str(task).strip():
-            raise ValueError("task must not be empty")
-        if not str(orientation).strip():
-            raise ValueError("orientation must not be empty")
-
-        self.fps = int(fps)
-        self.task = str(task).strip()
-        self.orientation = str(orientation).strip()
-        self.episode_dir = Path(root_dir).expanduser().resolve() / f"episode_{int(episode_index):06d}"
-        self.global_dir = self.episode_dir / "global"
-        self.wrist_dir = self.episode_dir / "wrist"
-        self.episode_dir.mkdir(parents=True, exist_ok=False)
-        self.global_dir.mkdir()
-        self.wrist_dir.mkdir()
-
-        self._timestamp_ns: list[int] = []
-        self._global_timestamp_ns: list[int] = []
-        self._wrist_timestamp_ns: list[int] = []
-        self._state: list[np.ndarray] = []
-        self._action: list[np.ndarray] = []
-        self._executed_action: list[np.ndarray] = []
-        self._overrun_count = 0
-        self._finalized = False
-
-    @property
-    def sample_count(self) -> int:
-        return len(self._timestamp_ns)
-
-    def write(
-        self,
-        *,
-        timestamp_ns: int,
-        global_rgb: Any,
-        wrist_rgb: Any,
-        state: Any,
-        action: Any,
-        global_timestamp_ns: int = -1,
-        wrist_timestamp_ns: int = -1,
-    ) -> int:
-        """Write ``(observation_t, expert_action_t)`` before robot execution."""
-
-        if self._finalized:
-            raise RuntimeError("episode has already been finalized")
-        timestamp_ns = int(timestamp_ns)
-        if timestamp_ns <= 0:
-            raise ValueError("timestamp_ns must be positive")
-        if self._timestamp_ns and timestamp_ns <= self._timestamp_ns[-1]:
-            raise ValueError("sample timestamps must be strictly increasing")
-
-        state_array = _finite_vector(state, STATE_DIM, "state")
-        action_array = _finite_vector(action, ACTION_DIM, "action")
-        global_image = _parse_image(global_rgb)
-        wrist_image = _parse_image(wrist_rgb)
-        index = self.sample_count
-
-        Image.fromarray(global_image).save(self.global_dir / f"{index:06d}.jpg", quality=95, subsampling=0)
-        Image.fromarray(wrist_image).save(self.wrist_dir / f"{index:06d}.jpg", quality=95, subsampling=0)
-
-        self._timestamp_ns.append(timestamp_ns)
-        self._global_timestamp_ns.append(int(global_timestamp_ns))
-        self._wrist_timestamp_ns.append(int(wrist_timestamp_ns))
-        self._state.append(state_array)
-        self._action.append(action_array)
-        self._executed_action.append(np.full(ACTION_DIM, np.nan, dtype=np.float32))
-        return index
-
-    def confirm_execution(self, sample_index: int, executed_action: Any) -> None:
-        """Attach the safety-filtered command returned by the robot interface."""
-
-        if int(sample_index) != self.sample_count - 1:
-            raise ValueError("only the latest sample can be confirmed")
-        if np.all(np.isfinite(self._executed_action[sample_index])):
-            raise RuntimeError(f"sample {sample_index} execution is already confirmed")
-        self._executed_action[sample_index] = _finite_vector(executed_action, ACTION_DIM, "executed_action")
-
-    def note_overrun(self) -> None:
-        self._overrun_count += 1
-
-    def finalize(self) -> Path:
-        if self._finalized:
-            return self.episode_dir
-        if not self._timestamp_ns:
-            raise RuntimeError("cannot finalize an empty episode")
-        if not all(np.all(np.isfinite(action)) for action in self._executed_action):
-            raise RuntimeError("cannot finalize: at least one recorded action was not executed successfully")
-
-        records_path = self.episode_dir / "records.npz"
-        records_tmp = self.episode_dir / "records.npz.tmp"
-        with records_tmp.open("wb") as stream:
-            np.savez_compressed(
-                stream,
-                timestamp_ns=np.asarray(self._timestamp_ns, dtype=np.int64),
-                global_timestamp_ns=np.asarray(self._global_timestamp_ns, dtype=np.int64),
-                wrist_timestamp_ns=np.asarray(self._wrist_timestamp_ns, dtype=np.int64),
-                state=np.stack(self._state).astype(np.float32),
-                action=np.stack(self._action).astype(np.float32),
-                executed_action=np.stack(self._executed_action).astype(np.float32),
-            )
-        records_tmp.replace(records_path)
-
-        metadata = {
-            "fps": self.fps,
-            "task": self.task,
-            "orientation": self.orientation,
-            "action_contract": ACTION_CONTRACT,
-            "state_dim": STATE_DIM,
-            "action_dim": ACTION_DIM,
-            "sample_count": self.sample_count,
-            "overrun_count": self._overrun_count,
-            "executed_action_is_safety_filtered": True,
-        }
-        metadata_path = self.episode_dir / "metadata.json"
-        metadata_tmp = self.episode_dir / "metadata.json.tmp"
-        metadata_tmp.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        metadata_tmp.replace(metadata_path)
-        self._finalized = True
-        return self.episode_dir
-
-
-def collect_expert_episode(
-    robot: DobotCollectionRobot,
-    gello: GelloCommandSource,
-    recorder: RawEpisodeRecorder,
-    *,
-    num_steps: int | None = None,
-    stop_requested: Callable[[], bool] | None = None,
-) -> Path:
-    """Collect one 20 Hz episode; robot connection/control stays caller-owned.
-
-    The observation and proposed expert action are recorded before execution.
-    The action returned by ``robot.apply_action`` is stored separately as the
-    exact safety-filtered command, preserving the distinction without using a
-    future state as the training label.
-    """
-
-    if recorder.fps != RAW_DATA_FPS:
-        raise ValueError(f"recorder must use {RAW_DATA_FPS} Hz")
-    if num_steps is None and stop_requested is None:
-        raise ValueError("provide num_steps or stop_requested")
-    if num_steps is not None and int(num_steps) <= 0:
-        raise ValueError("num_steps must be positive")
-
-    period_s = 1.0 / RAW_DATA_FPS
-    next_cycle = time.monotonic()
-    completed = 0
-    while num_steps is None or completed < int(num_steps):
-        if stop_requested is not None and stop_requested():
-            break
-        timestamp_ns = time.monotonic_ns()
-        images = robot.get_images()
-        missing_images = {"global_rgb", "wrist_rgb"} - set(images)
-        if missing_images:
-            raise KeyError(f"robot images are missing keys: {sorted(missing_images)}")
-        state = robot.get_state()
-        action = build_expert_action(gello.get_command())
-
-        sample_index = recorder.write(
-            timestamp_ns=timestamp_ns,
-            global_rgb=images["global_rgb"],
-            wrist_rgb=images["wrist_rgb"],
-            state=state,
-            action=action,
-            global_timestamp_ns=int(images.get("global_timestamp_ns", -1)),
-            wrist_timestamp_ns=int(images.get("wrist_timestamp_ns", -1)),
-        )
-        executed_action = robot.apply_action(action)
-        recorder.confirm_execution(sample_index, executed_action)
-        completed += 1
-
-        next_cycle += period_s
-        delay = next_cycle - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
-        else:
-            recorder.note_overrun()
-            next_cycle = time.monotonic()
-
-    if completed == 0:
-        raise RuntimeError("episode stopped before the first sample")
-    return recorder.finalize()
 
 
 def make_dobot_cr5_o6_example() -> dict[str, Any]:
@@ -833,12 +564,8 @@ __all__ = [
     "AsyncRTCController",
     "DobotCR5O6Inputs",
     "DobotCR5O6Outputs",
-    "GelloCommandAdapter",
     "RTCBroker",
     "RTCDeploymentConfig",
-    "RawEpisodeRecorder",
     "benchmark_policy_latency",
-    "build_expert_action",
-    "collect_expert_episode",
     "make_dobot_cr5_o6_example",
 ]
