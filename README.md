@@ -24,8 +24,6 @@ serve_policy.py：GPU 服务器启动 WebSocket 策略服务
 main_rtc.py：机器人端预览 → 人工审核 → 实机执行
 ```
 
-**部署契约**：20 Hz；每次模型预测 20 步动作；物理状态和动作均为 12 维：前 6 维是 CR3 关节角（弧度），后 6 维为 O6 寄存器值（0～255）。输入为全局、左腕、右腕三路图像，模型侧使用 224×224。当前 π0.5 内部将状态和动作填充至 32 维，实际机器人只接收前 12 维。本配置是**关节绝对目标**，不是 TCP 位姿，也不是关节增量。
-
 ### 1. 先区分两台机器
 
 | 位置 | 使用环境 | 执行内容 |
@@ -63,20 +61,10 @@ git clone --branch cr5-o6-pi05 \
   https://github.com/euiiue/openpi-for-diversity-robot.git openpi_cr3_o6
 cd openpi_cr3_o6
 ```
-
-已有仓库时进入已有目录，不要重复克隆。用 `git branch --show-current` 核对分支；用 `git rev-parse --short HEAD` 记录当前提交，便于实验复现。
-
 ### 步骤 2：安装并确认训练环境
 
-提前准备 `uv`、可用的 Python 3.11，以及支持当前 JAX CUDA 12 依赖的 NVIDIA 驱动。然后运行：
-
-```bash
-uv sync --python 3.11
-uv run python --version
-uv run python -c 'import jax; print(jax.devices())'
-```
-
-**通过标准**：Python 为 3.11；JAX 可以识别预期的 GPU。如果只显示 `CpuDevice`，先处理驱动／CUDA／JAX 环境，不要开始正式训练。
+提前准备 `uv`、可用的 Python 3.11，以及支持当前 JAX CUDA 12 依赖的 NVIDIA 驱动。
+Python 为 3.11；JAX 可以识别预期的 GPU。如果只显示 `CpuDevice`，先处理驱动／CUDA／JAX 环境，不要开始正式训练。
 
 ### 步骤 3：加载项目路径
 
@@ -103,8 +91,6 @@ source examples/cr3_o6/env.sh
 
 ### 步骤 4：定位 gello_CR 原始数据
 
-在采集电脑上找到**真正包含 `meta/info.json` 的目录**，将其同步或复制到 GPU 服务器。假设复制后的目录位于 `$OPENPI_DATA_HOME/raw/session_001`。如果采集目录叫 `cr3_o6_ceshi_reviewed_20260912`，可以直接填写其实际完整路径，不要求改名为 `session_001`。
-
 核查：
 
 ```bash
@@ -114,19 +100,13 @@ cat "$CR3_O6_SOURCE_ROOT_1/meta/info.json"
 ls "$CR3_O6_SOURCE_ROOT_1/meta/collection/" | head
 ```
 
-当前转换脚本要求原始数据为**已经完成写入的 LeRobot v3.0、20 Hz、至少一个 Episode**。参与转换的 Episode 必须是成功的关节空间示教，且默认不能标记为 `needs_review`。还需具有约定的 12 维状态／动作字段和三路图像。如果当前 gello_CR 导出格式不同，应先在采集或转换环节完成适配，不能只通过修改数据集名称绕过。
+当前转换脚本要求原始数据为**已经完成写入的 LeRobot v3.0、20 Hz、至少一个 Episode**。
 
 ### 步骤 5：设置输出数据集名称
 
 ```bash
 export CR3_O6_DATASET_ID='local/cr3_o6_motor_20260923'   # 改成这批转换数据的唯一名称
 export CR3_O6_DATASET_ROOT="$HF_LEROBOT_HOME/$CR3_O6_DATASET_ID"
-
-printf '来源：%s\n输出：%s\n' \
-  "$CR3_O6_SOURCE_ROOT_1" "$CR3_O6_DATASET_ROOT"
-test -d "$CR3_O6_SOURCE_ROOT_1" || echo '错误：原始数据目录不存在'
-test ! -e "$CR3_O6_DATASET_ROOT" || echo '注意：输出目录已存在，转换脚本不会覆盖'
-```
 
 **命名关系**：`CR3_O6_SOURCE_ROOT_1` 是采集产生的文件夹；`CR3_O6_DATASET_ID` 是本次**转换后的训练数据集 ID**，并非必须照抄采集文件夹名。该 ID 必须与随后训练配置的 `repo_id` 一致。重复转换应新建 ID，或在备份后人工处理已有目录，转换脚本不会自动覆盖。
 
@@ -147,9 +127,7 @@ uv run examples/cr3_o6/check_dataset.py \
 
 多段数据时，额外设置 `CR3_O6_SOURCE_ROOT_2`，并把两个路径都放到 `--source-roots` 后面。转换过程会根据 Episode 元数据、帧时间戳及视频时间戳核查输入。转换成功时打印输出目录，并在数据集内生成 `conversion.json`，记录来源、纳入／排除的 Episode 和帧数。数据检查通过后，会打印 `frames`、`episodes`、`tasks`、`model_state_shape`（`[32]`）及 `model_action_shape`（`[20,32]`）。这只能证明数据结构及变换可用，**不代表示教动作质量或实机成功率已经验证**。
 
-> 如果原始数据同时包含失败示教，先核查其标注；按需使用转换脚本支持的 `--drop-failures`，不要默认把所有失败样本混入当前成功示教基线。`needs_review` 的 Episode 应先人工复核。
 
----
 
 ## 四、GPU 服务器：配置、归一化及训练
 
@@ -165,7 +143,7 @@ data=LeRobotDobotCR5O6DataConfig(
 ),
 ```
 
-设置为本批数据使用的 ID。**这里只是示意需要修改的字段，不要将示例代码整体覆盖原有配置。** 修改前可用 `grep -n -A 35 'name="pi05_cr3_o6_joint_abs_lora"' src/openpi/training/config.py` 定位。当前配置默认 `batch_size=2`、总步数 `45000`、每 `5000` 步保存、每 `100` 步记录日志；学习率预热 `500` 步，峰值 `2.5e-5`，训练末期衰减至 `2.5e-6`。模型 `dtype="float32"`，冻结规则包含 PaliGemma 图像分支，并使用 LoRA 变体；不要把它理解为全量微调。
+设置为本批数据使用的 ID。**这里只是示意需要修改的字段，不要将示例代码整体覆盖原有配置。** 修改前可用 `grep -n -A 35 'name="pi05_cr3_o6_joint_abs_lora"' src/openpi/training/config.py` 定位。
 
 ### 步骤 8：计算归一化统计量
 
@@ -186,13 +164,10 @@ ls "$OPENPI_ASSETS_DIR/$CONFIG_NAME/$CR3_O6_DATASET_ID/"
 ### 步骤 9：启动训练
 
 ```bash
-mkdir -p "$OPENPI_ROOT/logs"
-set -o pipefail
-uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" \
-  2>&1 | tee "$OPENPI_ROOT/logs/${EXP_NAME}.log"
-```
 
-观察日志中的 `step`、`loss`、`grad_norm`、Checkpoint 保存消息；另外检查 GPU 显存和利用率（另一个终端运行 `nvidia-smi`）。训练输出默认在：
+uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" \
+```
+检查 GPU 显存和利用率（另一个终端运行 `nvidia-smi`）。训练输出默认在：
 
 ```text
 checkpoints/
@@ -225,26 +200,8 @@ uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" --resume
 
 ## 五、GPU 服务器：启动 Checkpoint 推理服务
 
-### 步骤 11：确认实际存在的步数
 
-```bash
-source examples/cr3_o6/env.sh
-cd "$OPENPI_ROOT"
-export CONFIG_NAME=pi05_cr3_o6_joint_abs_lora
-export EXP_NAME=cr3_o6_motor_v1
-
-ls "$OPENPI_CHECKPOINT_DIR/$CONFIG_NAME/$EXP_NAME"
-```
-
-例如目录确实存在 `45000/` 且保存完成，才设置：
-
-```bash
-export CHECKPOINT_STEP=45000    # 改成实际存在、保存完整的步数
-export POLICY_DIR="$OPENPI_CHECKPOINT_DIR/$CONFIG_NAME/$EXP_NAME/$CHECKPOINT_STEP"
-ls "$POLICY_DIR"
-```
-
-### 步骤 12：开启 WebSocket 服务
+### 步骤 11：开启 WebSocket 服务
 
 ```bash
 uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
@@ -252,7 +209,9 @@ uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
   --policy.dir "$POLICY_DIR"
 ```
 
-这个终端需要保持运行。当前服务监听 `0.0.0.0:8000`；`8000` 是策略服务端口，不是 NRC 控制端口。GPU 服务器通过 `ip -br addr` 查看自己实际可被机器人电脑访问的地址。机器人电脑用 `nc -vz <GPU服务器IP> 8000` 检查 TCP 连通性，命令中的 `<GPU服务器IP>` 必须替换成实际 IP（同机连接不需要跨设备检查）。跨网络部署还需正确配置防火墙或专用网络，不应将无认证的推理端口暴露到公网。
+这个终端需要保持运行。当前服务监听 `0.0.0.0:8000`；`8000` 是策略服务端口。GPU 服务器通过 `ip -br addr` 查看自己实际可被机器人电脑访问的地址。
+机器人电脑用 `nc -vz <GPU服务器IP> 8000` 检查 TCP 连通性，命令中的 `<GPU服务器IP>` 必须替换成实际 IP（同机连接不需要跨设备检查）。
+跨网络部署还需正确配置防火墙或专用网络，不应将无认证的推理端口暴露到公网。
 
 ---
 
@@ -260,7 +219,7 @@ uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
 
 > **以下命令在机器人控制电脑执行，不是在远程 GPU 终端执行。** 如果使用同一台电脑，仍应保留独立的 Python 3.12 虚拟环境。
 
-### 步骤 13：获取代码，初始化 Python 3.12
+### 步骤 12：获取代码，初始化 Python 3.12（新电脑上进行配置）
 
 ```bash
 git clone --branch cr5-o6-pi05 \
@@ -283,7 +242,7 @@ export CR3_O6_DEPLOY_PYTHON="$OPENPI_ROOT/.venv-cr3-deploy/bin/python"
 export CR3_O6_DEPLOY_PYTHON="$OPENPI_ROOT/.venv-cr3-deploy/bin/python"
 ```
 
-### 步骤 14：配置机器人、O6 与相机
+### 步骤 13：配置机器人、O6 与相机（新电脑上配置）
 
 首次运行时从模板复制本地配置；已有人工审核的配置不要随意覆盖：
 
@@ -304,22 +263,11 @@ nano "$CR3_O6_CONFIG_DIR/camera.local.yaml"
 - `o6_speed`、`o6_torque`：若设置，须同时提供六个 0～255 的整数；未审核前不要随意采用高速度或高力矩。
 
 `camera.local.yaml` 中，按相机物理安装位置填写：`global_camera_serial`、`wrist_camera_serial`、`right_wrist_camera_serial`。使用 `rs-enumerate-devices -s` 或 RealSense Viewer 查到的真实序列号。默认采集参数为 640×480、30 FPS；程序会形成三路模型输入并检查画面时效与帧间时间差。相机序列号缺失不能正常完成三路推理预览。
-
-机器人端还应确认：
-
-```bash
-ls examples/cr3_o6/deploy/vendor/nrc_linux_x86_64/nrc_interface.py
-ls examples/cr3_o6/deploy/vendor/nrc_linux_x86_64/_nrc_host.so
-"$CR3_O6_DEPLOY_PYTHON" -c 'import pyrealsense2, serial, pymodbus; print("部署依赖可导入")'
-```
-
-NRC 库目前仅支持相应 Linux x86_64／CPython 3.12 组合。**不要把示例配置中的 `192.0.2.1`、`null` 或示例相机序列号当作已配置完成。**
-
 ---
 
 ## 七、机器人控制电脑：先预览，后执行
 
-### 步骤 15：设置 GPU 服务器地址与任务文本
+### 步骤 14：设置 GPU 服务器地址与任务文本（新电脑上配置）
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -332,7 +280,7 @@ export CR3_O6_TASK_PROMPT='填入采集时该任务的真实英文文本'  # 修
 
 任务文本不是数据集目录名。应通过转换检查输出中的 `tasks`，确认本次 Checkpoint 对应的任务描述，并填写相应原文。当前代码仅在服务器元数据包含明确 `task_prompt` 时强制比较文本；即便没有强制校验，任务不匹配也可能使推理偏离训练分布。
 
-### 步骤 16：启动仅预览模式（不下发运动命令）
+### 步骤 15：启动仅预览模式（不下发运动命令）
 
 ```bash
 "$CR3_O6_DEPLOY_PYTHON" examples/cr3_o6/deploy/main_rtc.py \
@@ -346,7 +294,7 @@ export CR3_O6_TASK_PROMPT='填入采集时该任务的真实英文文本'  # 修
 
 **重要区别**：`--preview-only` 会连接 NRC、O6、三路相机与策略服务，并读取设备状态、执行模型推理；它只是不发送机器人运动命令，**不是完全脱离硬件的离线模式**。如果只想检查 Python 依赖和代码结构，请运行后面的自动化测试。预览正常后，按 `Ctrl+C` 退出。
 
-### 步骤 17：审核后进行短时实机执行
+### 步骤 16：审核后进行短时实机执行
 
 在控制柜、O6、相机、任务文本、工作空间边界、关节运动限制以及急停可用性全部现场确认后，确保 CR3 已进入可运行的伺服状态，并执行：
 
@@ -356,32 +304,11 @@ export CR3_O6_TASK_PROMPT='填入采集时该任务的真实英文文本'  # 修
   --config-dir "$CR3_O6_CONFIG_DIR" \
   --prompt "$CR3_O6_TASK_PROMPT" \
   --preview-port 8080 \
-  --duration-s 5 \
   --confirm-motion
 ```
 
-`--duration-s 5` 是初次调试用的短时运行示例，并不意味着 5 秒对任何场景都安全；现场应进一步限制接近物体和夹持动作的风险。如机器人未上伺服且现场流程允许由客户端上电，可以在**人工确认后**另行增加 `--power-on`。启动前必须确认相机映射、工作空间、手部动作与被控机构相符；启动后保持急停可及。
-
-实机控制默认运行 **20 Hz**。`--request-lead-steps` 默认 `6`（提前约 300 ms 请求下一段）；当前实现是异步双缓冲和过期动作拒绝，并非服务器端的 RTC 前缀条件化算法。观察 `RTC chunk ready`、`buffer_underrun_steps`、`inference_p95_ms` 等日志指标，若出现连续动作过期或缓存断供，不要直接增大运动速度来掩盖推理延迟。
-
 ---
 
-## 八、无实机验证与常见错误
-
-在 GPU 服务器的项目根目录执行：
-
-```bash
-source examples/cr3_o6/env.sh
-cd "$OPENPI_ROOT"
-
-env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest \
-  examples/cr3_o6/tests/test_portable_release.py \
-  examples/cr3_o6/tests/test_joint_contract.py \
-  examples/cr3_o6/tests/test_rtc_buffering.py \
-  examples/cr3_o6/tests/test_camera_preview.py -q
-```
-
-测试不要求真实机器人、O6 或相机，但预览测试会启动本机回环 HTTP 服务。`env -u PYTHONPATH` 用于排除外部 Python 路径影响；`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` 才是禁用第三方 pytest 插件自动加载的对应设置。测试通过**不等于**设备连通或机械安全性通过。
 
 | 现象 | 首先核查 |
 |---|---|
@@ -394,15 +321,3 @@ env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest \
 | 预览无法运行 | 三路相机序列号、控制柜 6001／7000、O6 串口和返回状态是否正常；预览也需要硬件连接 |
 | `RTC` 动作过期、画面卡顿 | 检查相机帧龄、三路帧间时间差、网络与推理耗时；对照 20 Hz／20 步动作契约 |
 | `start_control` 被拒绝 | 机器人是否已处于 Servo 状态 3，工作空间／关节步长／跟踪误差限值是否全部通过现场配置 |
-
-## 九、单次新实验检查清单
-
-- [ ] 本次 gello_CR 原始会话已结束写入，具有完整 v3.0、20 Hz、成功 joint 示教与三路相机数据。
-- [ ] `CR3_O6_SOURCE_ROOT_1` 是真实来源路径；`CR3_O6_DATASET_ID` 是新输出数据集名称。
-- [ ] 训练配置中的 `repo_id` 与新数据集 ID 相同，转换检查通过。
-- [ ] 使用当前数据集重新计算了归一化统计量。
-- [ ] 设置了本次 `EXP_NAME`，记录训练配置与 Git 提交。
-- [ ] 从实际保存完成的目录选择 `CHECKPOINT_STEP` 并启动服务。
-- [ ] 机器人端 Python 3.12 环境、NRC／O6／三路相机已检查。
-- [ ] `--host` 是模型服务器 IP；`controller_ip` 是控制柜 IP；任务文本对应当前数据集。
-- [ ] `--preview-only` 成功，完成现场安全审核后才启动 `--confirm-motion`。
