@@ -128,7 +128,8 @@ cd "$OPENPI_ROOT"
 `checkpoints/`、`.cache/jax/` 和部署配置目录。若存储位置不同，请在执行该文件前覆盖相应变量。
 
 ## 1. 转换已完成的 LeRobot v3 会话
-  此阶段为数据转换阶段，主要执行过程中需要修改的部分为 "cr3_o6_ceshi_reviewed_20260912"字段
+  此阶段为数据转换阶段，主要执行过程中需要修改的部分为 `cr3_o6_ceshi_reviewed_20260912`字段，此部分主要是
+  gello_CR采集时候命名的数据集名称，需要根据实际采集时候存储的数据集的命名来判断进行填充和修改。
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -137,10 +138,9 @@ cd "$OPENPI_ROOT"
 export CR3_O6_DATASET_ID="local/cr3_o6_ceshi_reviewed_20260912"
 export CR3_O6_DATASET_ROOT="$HF_LEROBOT_HOME/$CR3_O6_DATASET_ID"
 export CR3_O6_SOURCE_ROOT_1="$OPENPI_DATA_HOME/raw/session_001"
-export CR3_O6_SOURCE_ROOT_2="$OPENPI_DATA_HOME/raw/session_002"
 
 uv run examples/cr3_o6/convert_data_to_lerobot.py \
-  --source-roots "$CR3_O6_SOURCE_ROOT_1" "$CR3_O6_SOURCE_ROOT_2" \
+  --source-roots "$CR3_O6_SOURCE_ROOT_1" \
   --repo-id "$CR3_O6_DATASET_ID" \
   --output-root "$CR3_O6_DATASET_ROOT"
 
@@ -165,11 +165,10 @@ uv run scripts/compute_norm_stats.py --config-name "$CONFIG_NAME"
 uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME"
 ```
 
-当前 CR3/O6 基线将 JAX 模型 `dtype` 设置为 `float32`，因此既不是纯 FP16 训练，也不是
-FP16 混合精度训练。学习率在预热 500 步后达到 `2.5e-5`，并在第 45,000 步衰减至
-`2.5e-6`。配置中的冻结过滤规则会冻结 PaliGemma 的图像分支。
 
-如需续训，请保持相同的 `CONFIG_NAME` 和 `EXP_NAME`，并增加 `--resume`：
+执行以上命令开启归一化和训练配置，如果中途想打断或者因为意外断掉了训练，如需续训，请保持相同的 `CONFIG_NAME` 和 `EXP_NAME`前提下增加
+--resume
+执行一下命令可以进行续训练，执行此段命令时，注意保持在`$OPENPI_ROOT`文件夹之下执行命令
 
 ```bash
 uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" --resume
@@ -177,8 +176,8 @@ uv run scripts/train.py "$CONFIG_NAME" --exp-name "$EXP_NAME" --resume
 
 ## 3. 启动已训练检查点的策略服务
 
-从实验目录选择已完成的检查点步数，再启动 WebSocket 策略服务：
-
+根据训练好的checkpoint文件夹内的数据，确认好文件名称以及训练的步数，开启模型服务，当前模型使用的训练配置名称为`pi05_cr3_o6_joint_abs_lora`
+调用的训练步数文件为45000步，后续执行时候需要根据具体训练出来的checkpoint修改启动命令
 ```bash
 source examples/cr3_o6/env.sh
 cd "$OPENPI_ROOT"
@@ -195,8 +194,7 @@ uv run scripts/serve_policy.py --port 8000 policy:checkpoint \
 
 ## 4. 配置并运行可选实机客户端
 
-先从安全模板创建本地配置副本。这些文件会被 Git 忽略，必须填写本机的控制器地址、O6 串口设备、
-相机序列号、经现场审核的工作空间边界和运动限制。
+必须填写本机的控制器地址、O6 串口设备、相机序列号、经现场审核的工作空间边界和运动限制。
 
 ```bash
 source examples/cr3_o6/env.sh
@@ -217,7 +215,7 @@ export CR3_O6_DEPLOY_PYTHON="$OPENPI_ROOT/.venv-cr3-deploy/bin/python"
 ```
 
 将任务文本设为转换后数据集使用的任务文本。请先使用仅预览模式：它会连接相机和策略服务，但会在
-下发任何机器人运动命令之前丢弃全部模型动作。
+下发任何机器人运动命令之前丢弃全部模型动作，初次使用时候需要执行此段命令安装各类依赖。
 
 ```bash
 export CR3_O6_TASK_PROMPT="task text used by the converted dataset"
@@ -228,7 +226,7 @@ export CR3_O6_TASK_PROMPT="task text used by the converted dataset"
   --prompt "$CR3_O6_TASK_PROMPT" \
   --preview-port 8080 --preview-only
 ```
-
+`task text used by the converted dataset`字段为每次使用时具体不同任务所需要的不同命令
 只有在审核本地配置、实时相机预览、机器人状态和工作空间之后，操作员才可使用
 `--confirm-motion`。客户端在启动 ServoJ 控制前会刻意要求这一显式确认。
 
@@ -240,17 +238,3 @@ export CR3_O6_TASK_PROMPT="task text used by the converted dataset"
   --confirm-motion
 ```
 
-## 验证
-
-无需连接机器人、O6 灵巧手或相机，即可运行以下基线测试套件：
-
-```bash
-env -u PYTHONPATH uv run pytest \
-  examples/cr3_o6/tests/test_portable_release.py \
-  examples/cr3_o6/tests/test_joint_contract.py \
-  examples/cr3_o6/tests/test_rtc_buffering.py \
-  examples/cr3_o6/tests/test_camera_preview.py -q
-```
-
-预览测试会启动回环 HTTP 服务。`env -u PYTHONPATH` 在变量未设置时无副作用，并可避免 shell
-注入的无关 Python 环境加载外部 pytest 插件。
