@@ -119,7 +119,7 @@ export CR3_O6_DATASET_ROOT="$HF_LEROBOT_HOME/$CR3_O6_DATASET_ID"
 uv run examples/cr3_o6/convert_data_to_lerobot.py \
   --source-roots "$CR3_O6_SOURCE_ROOT_1" \
   --repo-id "$CR3_O6_DATASET_ID" \
-  --output-root "$CR3_O6_DATASET_ROOT"
+  --output-root "$CR3_O6_DATASET_ROOT" \
   --allow-needs-review
 
 uv run examples/cr3_o6/check_dataset.py \
