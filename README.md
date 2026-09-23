@@ -120,10 +120,12 @@ uv run examples/cr3_o6/convert_data_to_lerobot.py \
   --source-roots "$CR3_O6_SOURCE_ROOT_1" \
   --repo-id "$CR3_O6_DATASET_ID" \
   --output-root "$CR3_O6_DATASET_ROOT"
+  --allow-needs-review
 
 uv run examples/cr3_o6/check_dataset.py \
   --root "$CR3_O6_DATASET_ROOT" \
   --repo-id "$CR3_O6_DATASET_ID"
+
 ```
 
 多段数据时，额外设置 `CR3_O6_SOURCE_ROOT_2`，并把两个路径都放到 `--source-roots` 后面。转换过程会根据 Episode 元数据、帧时间戳及视频时间戳核查输入。转换成功时打印输出目录，并在数据集内生成 `conversion.json`，记录来源、纳入／排除的 Episode 和帧数。数据检查通过后，会打印 `frames`、`episodes`、`tasks`、`model_state_shape`（`[32]`）及 `model_action_shape`（`[20,32]`）。这只能证明数据结构及变换可用，**不代表示教动作质量或实机成功率已经验证**。
