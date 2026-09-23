@@ -107,6 +107,7 @@ ls "$CR3_O6_SOURCE_ROOT_1/meta/collection/" | head
 ```bash
 export CR3_O6_DATASET_ID='local/cr3_o6_motor_20260923'   # 改成这批转换数据的唯一名称
 export CR3_O6_DATASET_ROOT="$HF_LEROBOT_HOME/$CR3_O6_DATASET_ID"
+```
 
 **命名关系**：`CR3_O6_SOURCE_ROOT_1` 是采集产生的文件夹；`CR3_O6_DATASET_ID` 是本次**转换后的训练数据集 ID**，并非必须照抄采集文件夹名。该 ID 必须与随后训练配置的 `repo_id` 一致。重复转换应新建 ID，或在备份后人工处理已有目录，转换脚本不会自动覆盖。
 
