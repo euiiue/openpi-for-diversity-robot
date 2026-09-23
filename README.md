@@ -261,7 +261,7 @@ nano "$CR3_O6_CONFIG_DIR/camera.local.yaml"
 - `workspace_min_m`、`workspace_max_m`：依据实测机器人基坐标系的安全工作区域填写三轴边界，**单位为米**，不能保持 `null` 后直接启动运动。
 - `max_joint_step_rad`、`max_tracking_error_rad`：必须填写根据机械臂及现场实验审核的正数，**单位为弧度**。还需核对 `joint_target_max_speed_rad_s` 和 ServoJ 运动参数。
 - `o6_speed`、`o6_torque`：若设置，须同时提供六个 0～255 的整数；未审核前不要随意采用高速度或高力矩。
-```
+
 `camera.local.yaml` 中，按相机物理安装位置填写：`global_camera_serial`、`wrist_camera_serial`、`right_wrist_camera_serial`。使用 `rs-enumerate-devices -s` 或 RealSense Viewer 查到的真实序列号。默认采集参数为 640×480、30 FPS；程序会形成三路模型输入并检查画面时效与帧间时间差。相机序列号缺失不能正常完成三路推理预览。
 
 
